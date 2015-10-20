@@ -21,6 +21,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 #include "command-line.h"
@@ -41,6 +42,7 @@
 #include "util.h"
 
 #include "ofctrl.h"
+#include "ofcontroller.h"
 #include "binding.h"
 #include "chassis.h"
 #include "encaps.h"
@@ -56,6 +58,7 @@ static unixctl_cb_func ct_zone_list;
 #define DEFAULT_BRIDGE_NAME "br-int"
 
 static void parse_options(int argc, char *argv[]);
+static char const* get_switch_controller_path(void);
 OVS_NO_RETURN static void usage(void);
 
 static char *ovs_remote;
@@ -98,6 +101,48 @@ get_bridge(struct ovsdb_idl *ovs_idl, const char *br_name)
         }
     }
     return NULL;
+}
+
+static char const* get_switch_controller_path(void) {
+    static char *path = NULL;
+
+    if (!path)
+        path = xasprintf("%s/%s.%ld.sock",
+                         ovs_rundir(), "ovn-controller",
+                         (long int)getpid());
+
+    return path;
+}
+
+static void ovsrec_set_controller(struct controller_ctx *ctx,
+                                  struct ovsrec_bridge const*br) {
+    struct ovsrec_controller *controller;
+    struct ovsdb_datum const*bctrl, *target;
+    bool set = false;
+    static char *proto = NULL;
+
+    if (!proto)
+        proto = xasprintf("unix:%s", get_switch_controller_path());
+
+    if (!br || !ctx || !ctx->ovs_idl_txn || !ctx->ovs_idl)
+        return;
+
+    bctrl = ovsrec_bridge_get_controller(br, OVSDB_TYPE_UUID);
+    if (bctrl && bctrl->n > 0) {
+        struct ovsrec_controller const *ctrler;
+        ctrler = ovsrec_controller_get_for_uuid(ctx->ovs_idl, &bctrl->keys[0].uuid);
+        target = ovsrec_controller_get_target(ctrler, OVSDB_TYPE_STRING);
+        if (strcmp(target->keys[0].string, proto) != 0) {
+            set = true;
+        }
+    } else
+        set = true;
+
+    if (set) {
+        controller = ovsrec_controller_insert(ctx->ovs_idl_txn);
+        ovsrec_controller_set_target(controller, proto);
+        ovsrec_bridge_set_controller(br, &controller, 1);
+    }
 }
 
 static const struct ovsrec_bridge *
@@ -158,8 +203,9 @@ get_br_int(struct controller_ctx *ctx)
     const struct ovsrec_bridge *br;
     br = get_bridge(ctx->ovs_idl, br_int_name);
     if (!br) {
-        return create_br_int(ctx, cfg, br_int_name);
+        br = create_br_int(ctx, cfg, br_int_name);
     }
+    ovsrec_set_controller(ctx, br);
     return br;
 }
 
@@ -209,6 +255,8 @@ main(int argc, char *argv[])
     parse_options(argc, argv);
     fatal_ignore_sigpipe();
 
+    daemon_save_fd(1);
+    daemon_save_fd(2);
     daemonize_start(false);
 
     retval = unixctl_server_create(NULL, &unixctl);
@@ -223,6 +271,7 @@ main(int argc, char *argv[])
     sbrec_init();
 
     ofctrl_init();
+    ofcontroller_init(get_switch_controller_path());
     lflow_init();
 
     /* Connect to OVS OVSDB instance.  We do not monitor all tables by
@@ -246,6 +295,10 @@ main(int argc, char *argv[])
     ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_name);
     ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_fail_mode);
     ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_other_config);
+    ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_controller);
+    ovsdb_idl_add_table(ovs_idl_loop.idl, &ovsrec_table_controller);
+    ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_controller_col_target);
+    ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_controller_col_is_connected);
     chassis_register_ovs_idl(ovs_idl_loop.idl);
     encaps_register_ovs_idl(ovs_idl_loop.idl);
     binding_register_ovs_idl(ovs_idl_loop.idl);
@@ -299,6 +352,7 @@ main(int argc, char *argv[])
                              br_int, chassis_id, &ct_zones, &flow_table);
             }
             ofctrl_put(&flow_table);
+            ofcontroller_run(&ctx, br_int);
             hmap_destroy(&flow_table);
         }
 
@@ -314,6 +368,7 @@ main(int argc, char *argv[])
 
         if (br_int) {
             ofctrl_wait();
+            ofcontroller_wait();
         }
         poll_block();
         if (should_service_stop()) {

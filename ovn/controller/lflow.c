@@ -300,6 +300,7 @@ lflow_run(struct controller_ctx *ctx, struct hmap *flow_table,
         error = actions_parse_string(lflow->actions, &symtab, &ldp->ports,
                                      ct_zones, first_ptable, LOG_PIPELINE_LEN,
                                      lflow->table_id, output_ptable,
+                                     OFTABLE_CONTROLLER,
                                      &ofpacts, &prereqs);
         if (error) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);

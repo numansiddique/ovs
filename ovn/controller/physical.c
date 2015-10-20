@@ -493,6 +493,17 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
         match_set_reg(&match, MFF_LOG_OUTPORT - MFF_REG0, binding->tunnel_key);
         ofctrl_add_flow(flow_table, OFTABLE_DROP_LOOPBACK, 100,
                         &match, &ofpacts);
+
+        /* Table 35, Priority 50.
+         * =====================
+         * Add the flows to forward packets to the controller
+         *
+         */
+        if (binding->chassis && binding->chassis->name &&
+            (!strcmp(binding->chassis->name, this_chassis_id))) {
+            ofcontroller_add_flows(binding, flow_table);
+        }
+
     }
 
     /* Handle output to multicast groups, in tables 32 and 33. */
