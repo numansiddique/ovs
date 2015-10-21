@@ -1300,6 +1300,35 @@ tcp.flags = RST;
       </column>
     </group>
 
+    <group title="Dhcp options for vm ports">
+        <p>
+          These options apply when <ref column="type"/> is
+          <code>(empty string)</code>. These options are used by the
+          <code>ovn-controller</code> to reply to the dhcp requests from the
+          vm ports.
+          The format of the key should be "dhcp-opt-OPTCODE" where OPTCODE is
+          the dhcp option code.
+          Eg. To set netmask dhcp option, the key should be "dhcp-opt-1".
+          <code>ovn-controller</code> will reply to the dhcp packet only
+          if dhcp option netmask - "dhcp-opt-1" and  dhcp option router
+          "dhcp-opt-3" are set.
+          <code>ovn-controller</code> expects the CMS plugin to set the values
+          of the dhcp options as defined in the RFC 2132.
+        </p>
+
+        <column name="options" key="dhcp-opt-1">
+          Optional. Dhcp option netmask value to be returned by the
+          <code>ovn-controller</code> to the DHCP discover/request
+          from the vm port.
+        </column>
+
+        <column name="options" key="dhcp-opt-3">
+          Optional. Dhcp option router value to be returned by the
+          <code>ovn-controller</code> to the DHCP discover/request
+          from the vm port.
+        </column>
+    </group>
+
     <group title="Nested Containers">
       <p>
         These columns support containers nested within a VM.  Specifically,
