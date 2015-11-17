@@ -237,6 +237,9 @@ int ofputil_packet_in_format_from_string(const char *);
 const char *ofputil_packet_in_format_to_string(enum nx_packet_in_format);
 struct ofpbuf *ofputil_make_set_packet_in_format(enum ofp_version,
                                                  enum nx_packet_in_format);
+struct ofpbuf *
+ofputil_make_set_controller_id(enum ofp_version ofp_version,
+                               uint16_t controller_id);
 
 /* NXT_FLOW_MOD_TABLE_ID extension. */
 struct ofpbuf *ofputil_make_flow_mod_table_id(bool flow_mod_table_id);

@@ -1544,6 +1544,20 @@ ofputil_make_set_packet_in_format(enum ofp_version ofp_version,
     return msg;
 }
 
+struct ofpbuf *
+ofputil_make_set_controller_id(enum ofp_version ofp_version,
+                               uint16_t controller_id)
+{
+    struct nx_controller_id *cid;
+    struct ofpbuf *msg;
+
+    msg = ofpraw_alloc(OFPRAW_NXT_SET_CONTROLLER_ID, ofp_version, 0);
+    cid = ofpbuf_put_zeros(msg, sizeof *cid);
+    cid->controller_id = htons(controller_id);
+
+    return msg;
+}
+
 /* Returns an OpenFlow message that can be used to turn the flow_mod_table_id
  * extension on or off (according to 'flow_mod_table_id'). */
 struct ofpbuf *

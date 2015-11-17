@@ -21,6 +21,8 @@
 
 #include "meta-flow.h"
 
+#define OVN_PACKET_IN_CONTROLLER_ID (UINT16_MAX)
+
 struct ovsrec_bridge;
 struct controller_ctx;
 
