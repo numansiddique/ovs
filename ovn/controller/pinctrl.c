@@ -112,7 +112,7 @@ process_packet_in(struct controller_ctx *ctx OVS_UNUSED,
         return;
     }
 
-    if (pin.reason != OFPR_NO_MATCH) {
+    if (pin.reason != OFPR_ACTION) {
         return;
     }
 
