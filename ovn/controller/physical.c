@@ -18,6 +18,7 @@
 #include "lflow.h"
 #include "match.h"
 #include "ofctrl.h"
+#include "pinctrl.h"
 #include "ofp-actions.h"
 #include "ofpbuf.h"
 #include "ovn-controller.h"
@@ -396,13 +397,33 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
                                 tag ? 150 : 100, &match, &ofpacts);
             }
 
-            /* Table 33, priority 100.
-             * =======================
+            /* Table 33, priority 100 and 150
+             * ==============================
              *
              * Implements output to local hypervisor.  Each flow matches a
              * logical output port on the local hypervisor, and resubmits to
              * table 34.
+             * Also, send the DHCP traffic to the controller as packet-in
              */
+
+            match_init_catchall(&match);
+            ofpbuf_clear(&ofpacts);
+
+            match_set_metadata(&match, htonll(binding->datapath->tunnel_key));
+            match_set_dl_type(&match, htons(ETH_TYPE_IP));
+            match_set_nw_proto(&match, IPPROTO_UDP);
+            match_set_nw_src(&match, htonl(INADDR_ANY));
+            match_set_nw_dst(&match, htonl(INADDR_BROADCAST));
+            match_set_tp_src(&match, htons(68));
+            match_set_tp_dst(&match, htons(67));
+
+            struct ofpact_controller *controller =
+                ofpact_put_CONTROLLER(&ofpacts);
+            controller->max_len = UINT16_MAX;
+            controller->controller_id = OVN_PACKET_IN_CONTROLLER_ID;
+            controller->reason = OFPR_ACTION;
+            ofctrl_add_flow(flow_table, OFTABLE_LOCAL_OUTPUT, 150, &match,
+                            &ofpacts);
 
             match_init_catchall(&match);
             ofpbuf_clear(&ofpacts);

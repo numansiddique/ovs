@@ -82,6 +82,7 @@ process_packet_in(struct controller_ctx *ctx OVS_UNUSED,
     if (ofputil_decode_packet_in(&pin, msg) != 0) {
         return;
     }
+
     if (pin.reason != OFPR_NO_MATCH) {
         return;
     }
@@ -98,6 +99,7 @@ pinctrl_recv(struct controller_ctx *ctx, const struct ofp_header *oh,
     } else if (type == OFPTYPE_GET_CONFIG_REPLY) {
         struct ofpbuf rq_buf;
         struct ofpbuf *spif;
+        struct ofpbuf *scid;
         struct ofp_switch_config *config_, config;
 
         ofpbuf_use_const(&rq_buf, oh, ntohs(oh->length));
@@ -105,9 +107,14 @@ pinctrl_recv(struct controller_ctx *ctx, const struct ofp_header *oh,
         config = *config_;
         config.miss_send_len = htons(UINT16_MAX);
         set_switch_config(swconn, &config);
+
         spif = ofputil_make_set_packet_in_format(rconn_get_version(swconn),
                                                  NXPIF_NXM);
         queue_msg(spif);
+
+        scid = ofputil_make_set_controller_id(rconn_get_version(swconn),
+                                              OVN_PACKET_IN_CONTROLLER_ID);
+        queue_msg(scid);
     } else if (type == OFPTYPE_PACKET_IN) {
         process_packet_in(ctx, oh);
     } else if (type != OFPTYPE_ECHO_REPLY && type != OFPTYPE_BARRIER_REPLY) {
