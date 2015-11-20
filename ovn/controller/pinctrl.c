@@ -16,6 +16,7 @@
 
 #include <config.h>
 #include "dirs.h"
+#include "dp-packet.h"
 #include "pinctrl.h"
 #include "ofp-msgs.h"
 #include "ofp-print.h"
@@ -24,8 +25,12 @@
 #include "openvswitch/vlog.h"
 #include "socket-util.h"
 #include "vswitch-idl.h"
+#include "ovn-dhcp.h"
 
 VLOG_DEFINE_THIS_MODULE(pinctrl);
+
+#define DHCP_CLIENT_PORT 68
+#define DHCP_SERVER_PORT 67
 
 /* OpenFlow connection to the switch. */
 static struct rconn *swconn;
@@ -73,11 +78,35 @@ set_switch_config(struct rconn *swconn, const struct ofp_switch_config *config)
     queue_msg(request);
 }
 
+static enum ofputil_protocol
+pinctrl_ofp_proto(void)
+{
+    enum ofp_version version;
+
+    version = rconn_get_version(swconn);
+    return ofputil_protocol_from_ofp_version(version);
+}
+
+static inline bool
+is_dhcp_packet(struct flow *flow)
+{
+    if (flow->dl_type == htons(ETH_TYPE_IP) &&
+        flow->nw_proto == IPPROTO_UDP &&
+        flow->nw_src == INADDR_ANY &&
+        flow->nw_dst == INADDR_BROADCAST &&
+        flow->tp_src == htons(DHCP_CLIENT_PORT) &&
+        flow->tp_dst == htons(DHCP_SERVER_PORT)) {
+        return true;
+    }
+    return false;
+}
+
 static void
 process_packet_in(struct controller_ctx *ctx OVS_UNUSED,
                   const struct ofp_header *msg)
 {
     struct ofputil_packet_in pin;
+    struct ofpbuf *buf = NULL;
 
     if (ofputil_decode_packet_in(&pin, msg) != 0) {
         return;
@@ -87,7 +116,19 @@ process_packet_in(struct controller_ctx *ctx OVS_UNUSED,
         return;
     }
 
-    /* XXX : process the received packet */
+    struct flow flow;
+    struct dp_packet packet;
+    dp_packet_use_const(&packet, pin.packet, pin.packet_len);
+    flow_extract(&packet, &flow);
+
+    if (is_dhcp_packet(&flow)) {
+        ovn_dhcp_process_packet(ctx, &pin, pinctrl_ofp_proto(),
+                                &flow, &packet, &buf);
+        if (buf) {
+            rconn_send(swconn, buf, NULL);
+        }
+    }
+
 }
 
 static void

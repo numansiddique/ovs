@@ -16,6 +16,8 @@ ovn_controller_ovn_controller_SOURCES = \
 	ovn/controller/patch.h \
 	ovn/controller/ovn-controller.c \
 	ovn/controller/ovn-controller.h \
+	ovn/controller/ovn-dhcp.c \
+	ovn/controller/ovn-dhcp.h \
 	ovn/controller/physical.c \
 	ovn/controller/physical.h
 ovn_controller_ovn_controller_LDADD = ovn/lib/libovn.la lib/libopenvswitch.la
