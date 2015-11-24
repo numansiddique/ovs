@@ -1104,3 +1104,187 @@ for i in 1 2 3; do
     done
 done
 AT_CLEANUP
+
+AT_SETUP([ovn dhcp -- 3 HVs, 3 LS, 3 lports/LS, 1 LR])
+AT_SKIP_IF([test $HAVE_PYTHON = no])
+ovn_start
+
+# Logical network:
+#
+# Three logical switches ls1, ls2, ls3.
+# One logical router lr0 connected to ls[123],
+# with nine subnets, three per logical switch:
+#
+#    lrp11 on ls1 for subnet 192.168.11.0/24
+#    lrp12 on ls1 for subnet 192.168.12.0/24
+#    lrp13 on ls1 for subnet 192.168.13.0/24
+#    ...
+#    lrp33 on ls3 for subnet 192.168.33.0/24
+#
+# 27 VIFs, 9 per LS, 3 per subnet: lp[123][123][123], where the first two
+# digits are the subnet and the last digit distinguishes the VIF.
+for i in 1 2 3; do
+    ovn-nbctl lswitch-add ls$i
+    for j in 1 2 3; do
+        for k in 1 2 3; do
+        ovn-nbctl \
+        -- lport-add ls$i lp$i$j$k \
+        -- lport-set-addresses lp$i$j$k "f0:00:00:00:0$i:$j$k 192.168.$i$j.$k"
+        done
+    done
+done
+
+# Physical network:
+#
+# Three hypervisors hv[123].
+# lp?1[123] spread across hv[123]: lp?11 on hv1, lp?12 on hv2, lp?13 on hv3.
+# lp?2[123] spread across hv[23]: lp?21 and lp?22 on hv2, lp?23 on hv3.
+# lp?3[123] all on hv3.
+
+
+# Given the name of a logical port, prints the name of the hypervisor
+# on which it is located.
+vif_to_hv() {
+    case $1 in dnl (
+        ?11) echo 1 ;; dnl (
+        ?12 | ?21 | ?22) echo 2 ;; dnl (
+        ?13 | ?23 | ?3?) echo 3 ;;
+    esac
+}
+
+# Given the name of a logical port, prints the name of its logical router
+# port, e.g. "vif_to_lrp 123" yields 12.
+vif_to_lrp() {
+    echo ${1%?}
+}
+
+# Given the name of a logical port, prints the name of its logical
+# switch, e.g. "vif_to_ls 123" yields 1.
+vif_to_ls() {
+    echo ${1%??}
+}
+
+net_add n1
+for i in 1 2 3; do
+    sim_add hv$i
+    as hv$i
+    ovs-vsctl add-br br-phys
+    ovn_attach n1 br-phys 192.168.0.$i
+done
+for i in 1 2 3; do
+    for j in 1 2 3; do
+        for k in 1 2 3; do
+        hv=`vif_to_hv $i$j$k`
+        as hv$hv ovs-vsctl \
+        -- add-port br-int vif$i$j$k \
+        -- set Interface vif$i$j$k \
+               external-ids:iface-id=lp$i$j$k \
+               options:tx_pcap=hv$hv/vif$i$j$k-tx.pcap \
+               options:rxq_pcap=hv$hv/vif$i$j$k-rx.pcap \
+               ofport-request=$i$j$k
+        done
+    done
+done
+
+# Pre-populate the hypervisors' ARP tables so that we don't lose any
+# packets for ARP resolution (native tunneling doesn't queue packets
+# for ARP resolution).
+ovn_populate_arp
+
+# Allow some time for ovn-northd and ovn-controller to catch up.
+# XXX This should be more systematic.
+sleep 1
+
+send_dhcp_packet() {
+    local inport=$1 src_mac=$2 dhcp_type=$3
+    local request=ffffffffffff${src_mac}080045100110000000008011000000000000ffffffff
+    # udp header and dhcp header
+    request+=0044004300FC0000
+    request+=010106006359aa760000000000000000000000000000000000000000${src_mac}
+    # client hardware padding
+    request+=00000000000000000000
+    # server hostname
+    request+=0000000000000000000000000000000000000000000000000000000000000000
+    request+=0000000000000000000000000000000000000000000000000000000000000000
+    # boot file name
+    request+=0000000000000000000000000000000000000000000000000000000000000000
+    request+=0000000000000000000000000000000000000000000000000000000000000000
+    request+=0000000000000000000000000000000000000000000000000000000000000000
+    request+=0000000000000000000000000000000000000000000000000000000000000000
+    # dhcp magic cookie
+    request+=63825363
+    # dhcp message type
+    request+=3501${dhcp_type}ff
+    shift; shift; shift; shift; shift
+    hv=`vif_to_hv $inport`
+    as hv$hv ovs-appctl netdev-dummy/receive vif$inport $request
+}
+
+ip_to_hex() {
+    printf "%02x%02x%02x%02x" "$@"
+}
+
+run_dhcp_test() {
+    local i=$1 j=$2 k=$3 set_option=$4 dhcp_type=$5
+    netmask=255.255.255.0
+    gw_ip=0.0.0.0
+    if $set_option = 'true'; then
+        netmask=255.255.252.0
+        gw_ip=192.168.$i$j.254
+        ovn-nbctl \
+            -- lport-set-options lp$i$j$k \
+            "dhcp-opt-1=$netmask" "dhcp-opt-3=$gw_ip"
+        sleep 1
+    fi
+
+    echo $gw_ip
+    echo $netmask
+    hv=`vif_to_hv $i$j$k`
+    as hv$hv ovs-ofctl dump-flows br-int
+    inport=$i$j$k
+    send_dhcp_packet $inport f00000000$i$j$k $dhcp_type
+    sleep 2
+    if $set_option = 'true'; then
+        AT_CHECK([ovstest test-ovn-dhcp hv$hv/vif$i$j$k-tx.pcap \
+                  192.168.$i$j.$k $netmask $gw_ip $dhcp_type], [0], [ignore])
+    else
+        #dhcp options are not set. So the dhcp packet should be recieved
+        # by other ports attached to the br-int since its flooded.
+        # verify if the dhcp packet was flooded or not.
+        for a in 1 2 3; do
+            for b in 1 2 3; do
+                for c in 1 2 3; do
+                    if test $a$b$c = $inport; then
+                        continue
+                    fi
+                thv=`vif_to_hv $a$b$c`
+                if test $thv = $hv; then
+                    AT_CHECK([ovstest test-ovn-dhcp hv$hv/vif$a$b$c-tx.pcap],
+                              [0], [ignore])
+                fi
+                done
+            done
+        done
+
+    fi
+}
+
+#send DHCP DISCOVER
+run_dhcp_test 1 1 1 true 01
+
+#send DHCP OFFER
+run_dhcp_test 2 1 1 true 03
+
+# don not set the dhcp options
+# the dhcp packet should be flooded.
+run_dhcp_test 1 2 1 false 01
+
+# remove the ip address from the port
+# the dhcp packet should be flooded.
+ovn-nbctl \
+    -- lport-set-addresses lp231 "f0:00:00:00:02:31"
+sleep 1
+
+run_dhcp_test 2 3 1 false 01
+
+AT_CLEANUP
