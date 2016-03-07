@@ -28,12 +28,16 @@
 #include "packets.h"
 #include "simap.h"
 
+
 VLOG_DEFINE_THIS_MODULE(lflow);
 
 /* Symbol table. */
 
 /* Contains "struct expr_symbol"s for fields supported by OVN lflows. */
 static struct shash symtab;
+
+/* Contains "struct expr_symbol_dhcp_opts"s for dhcp options */
+static struct shash dhcp_opt_symtab;
 
 static void
 add_logical_register(struct shash *symtab, enum mf_field_id id)
@@ -156,6 +160,27 @@ lflow_init(void)
     expr_symtab_add_predicate(&symtab, "sctp", "ip.proto == 132");
     expr_symtab_add_field(&symtab, "sctp.src", MFF_SCTP_SRC, "sctp", false);
     expr_symtab_add_field(&symtab, "sctp.dst", MFF_SCTP_DST, "sctp", false);
+
+    /* dhcp options */
+    shash_init(&dhcp_opt_symtab);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "offerip", 0,
+                                   DHCP_OPT_TYPE_IP4);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "netmask", 1,
+                                   DHCP_OPT_TYPE_IP4);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "router", 3,
+                                   DHCP_OPT_TYPE_IP4);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "dns_server", 6,
+                                   DHCP_OPT_TYPE_IP4);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "domain_name", 15,
+                                   DHCP_OPT_TYPE_STR);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "ip_forward_enable", 19,
+                                   DHCP_OPT_TYPE_BOOL);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "mtu", 26,
+                                   DHCP_OPT_TYPE_UINT16);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "lease_time", 51,
+                                   DHCP_OPT_TYPE_UINT32);
+    dhcp_opt_expr_symtab_add_field(&dhcp_opt_symtab, "server_id", 54,
+                                   DHCP_OPT_TYPE_IP4);
 }
 
 struct lookup_port_aux {
@@ -280,6 +305,7 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
         };
         struct action_params ap = {
             .symtab = &symtab,
+            .dhcp_opt_symtab = &dhcp_opt_symtab,
             .lookup_port = lookup_port_cb,
             .aux = &aux,
             .ct_zones = ct_zones,
@@ -443,4 +469,6 @@ void
 lflow_destroy(void)
 {
     expr_symtab_destroy(&symtab);
+    dhcp_opt_expr_symtab_destroy(&dhcp_opt_symtab);
+    shash_destroy(&dhcp_opt_symtab);
 }

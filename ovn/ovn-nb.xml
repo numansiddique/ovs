@@ -78,6 +78,12 @@
         See <em>External IDs</em> at the beginning of this document.
       </column>
     </group>
+
+    <column name="dhcp_options">
+        This column provides key/value settings specific to the logical port
+        <ref column="type"/>.  The type-specific options are described
+        individually below.
+    </column>
   </table>
 
   <table name="Logical_Port" title="L2 logical switch port">

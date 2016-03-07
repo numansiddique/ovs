@@ -391,4 +391,61 @@ char *expr_parse_field(struct lexer *, int n_bits, bool rw,
                        const struct shash *symtab, struct mf_subfield *,
                        struct expr **prereqsp);
 
+/* Type of a "union expr_constant" or "struct expr_constant_set". */
+enum expr_constant_type {
+    EXPR_C_INTEGER,
+    EXPR_C_STRING
+};
+
+/* A string or integer constant (one must know which from context). */
+union expr_constant {
+    /* Integer constant.
+     *
+     * The width of a constant isn't always clear, e.g. if you write "1",
+     * there's no way to tell whether you mean for that to be a 1-bit constant
+     * or a 128-bit constant or somewhere in between. */
+    struct {
+        union mf_subvalue value;
+        union mf_subvalue mask; /* Only initialized if 'masked'. */
+        bool masked;
+
+        enum lex_format format; /* From the constant's lex_token. */
+    };
+
+    /* Null-terminated string constant. */
+    char *string;
+};
+
+/* A collection of "union expr_constant"s of the same type. */
+struct expr_constant_set {
+    union expr_constant *values;  /* Constants. */
+    size_t n_values;              /* Number of constants. */
+    enum expr_constant_type type; /* Type of the constants. */
+    bool in_curlies;              /* Whether the constants were in {}. */
+};
+
+bool expr_parse_constant_set(struct lexer *, const struct shash *symtab,
+                             struct expr_constant_set *cs);
+void expr_constant_set_destroy(struct expr_constant_set *cs);
+
+enum dhcp_opt_type {
+    DHCP_OPT_TYPE_BOOL,
+    DHCP_OPT_TYPE_UINT8,
+    DHCP_OPT_TYPE_UINT16,
+    DHCP_OPT_TYPE_UINT32,
+    DHCP_OPT_TYPE_IP4,
+    DHCP_OPT_TYPE_STR
+};
+
+struct expr_symbol_dhcp_opts {
+    char *opt_name;
+    uint8_t opt_code;
+    uint8_t opt_type;
+};
+
+struct expr_symbol_dhcp_opts *dhcp_opt_expr_symtab_add_field(
+    struct shash *symtab, const char *opt_name, uint8_t opt_code,
+    enum  dhcp_opt_type type);
+
+void dhcp_opt_expr_symtab_destroy(struct shash *symtab);
 #endif /* ovn/expr.h */

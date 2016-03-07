@@ -89,16 +89,18 @@ enum ovn_stage {
     PIPELINE_STAGE(SWITCH, IN,  PORT_SEC_L2,    0, "ls_in_port_sec_l2")     \
     PIPELINE_STAGE(SWITCH, IN,  PORT_SEC_IP,    1, "ls_in_port_sec_ip")     \
     PIPELINE_STAGE(SWITCH, IN,  PORT_SEC_ND,    2, "ls_in_port_sec_nd")     \
-    PIPELINE_STAGE(SWITCH, IN,  PRE_ACL,        3, "ls_in_pre_acl")      \
-    PIPELINE_STAGE(SWITCH, IN,  ACL,            4, "ls_in_acl")          \
-    PIPELINE_STAGE(SWITCH, IN,  ARP_RSP,        5, "ls_in_arp_rsp")      \
-    PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,        6, "ls_in_l2_lkup")      \
+    PIPELINE_STAGE(SWITCH, IN,  DHCP,           3, "ls_in_dhcp")     \
+    PIPELINE_STAGE(SWITCH, IN,  PRE_ACL,        4, "ls_in_pre_acl")      \
+    PIPELINE_STAGE(SWITCH, IN,  ACL,            5, "ls_in_acl")          \
+    PIPELINE_STAGE(SWITCH, IN,  ARP_RSP,        6, "ls_in_arp_rsp")      \
+    PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,        7, "ls_in_l2_lkup")      \
                                                                       \
     /* Logical switch egress stages. */                               \
-    PIPELINE_STAGE(SWITCH, OUT, PRE_ACL,     0, "ls_out_pre_acl")     \
-    PIPELINE_STAGE(SWITCH, OUT, ACL,         1, "ls_out_acl")         \
-    PIPELINE_STAGE(SWITCH, OUT, PORT_SEC_IP, 2, "ls_out_port_sec_ip")    \
-    PIPELINE_STAGE(SWITCH, OUT, PORT_SEC_L2, 3, "ls_out_port_sec_l2")    \
+    PIPELINE_STAGE(SWITCH, OUT, DHCP,        0, "ls_out_dhcp")     \
+    PIPELINE_STAGE(SWITCH, OUT, PRE_ACL,     1, "ls_out_pre_acl")     \
+    PIPELINE_STAGE(SWITCH, OUT, ACL,         2, "ls_out_acl")         \
+    PIPELINE_STAGE(SWITCH, OUT, PORT_SEC_IP, 3, "ls_out_port_sec_ip")    \
+    PIPELINE_STAGE(SWITCH, OUT, PORT_SEC_L2, 4, "ls_out_port_sec_l2")    \
                                                                       \
     /* Logical router ingress stages. */                              \
     PIPELINE_STAGE(ROUTER, IN,  ADMISSION,   0, "lr_in_admission")    \
@@ -1324,6 +1326,76 @@ has_stateful_acl(struct ovn_datapath *od)
     return false;
 }
 
+static bool
+build_dhcp_action(struct ovn_port *op, ovs_be32 offer_ip, struct ds *action)
+{
+    uint8_t options_bmap = 0;
+    struct smap_node *node;
+    char *server_ip= NULL;
+    char *server_mac = NULL;
+
+    bool dhcp_disabled = smap_get_bool(&op->nbs->options,
+                                       "dhcp_disabled", false);
+    if (dhcp_disabled) {
+        /* CMS has disabled native dhcp for this lport */
+        return false;
+    }
+
+    SMAP_FOR_EACH(node, &op->od->nbs->dhcp_options) {
+        if(!strcmp(node->key, "router")) {
+            options_bmap |= 0x1;
+        } else if (!strcmp(node->key, "server_id")) {
+            options_bmap |= 0x2;
+            server_ip = node->value;
+        } else if (!strcmp(node->key, "server_mac")) {
+            options_bmap |= 0x4;
+            server_mac = node->value;
+            continue;
+        } else if (!strcmp(node->key, "lease_time")) {
+            options_bmap |= 0x8;
+        } else if (!strcmp(node->key, "netmask")) {
+            options_bmap |= 0x10;
+        }
+    }
+
+    if (!(options_bmap & 0x08)) {
+        return false;
+    }
+
+    struct smap dhcp_options;
+    smap_init(&dhcp_options);
+    smap_clone(&dhcp_options, &op->od->nbs->dhcp_options);
+
+    if (!(options_bmap & 0x10)) {
+        smap_add(&dhcp_options, "netmask", "255.255.255.0");
+    }
+
+    /* server_mac is not dhcp option, delete it from the smap */
+    smap_remove(&dhcp_options, "server_mac");
+
+    SMAP_FOR_EACH(node, &op->nbs->options) {
+        if(!strncmp(node->key, "dhcp_opt_", 9)) {
+            smap_replace(&dhcp_options, &node->key[9], node->value);
+        }
+    }
+
+    ds_put_format(action, "dhcp_offer(offerip = "IP_FMT", ",
+                      IP_ARGS(offer_ip));
+    SMAP_FOR_EACH(node, &dhcp_options) {
+        ds_put_format(action, "%s = %s, ", node->key, node->value);
+    }
+    smap_destroy(&dhcp_options);
+    ds_chomp(action, ' ');
+    ds_chomp(action, ',');
+
+    ds_put_format(action, "); eth.dst = eth.src; eth.src = %s; ip4.dst = "IP_FMT"; "
+                              "ip4.src = %s; udp.src = 67; udp.dst = 68; ",
+                              server_mac, IP_ARGS(offer_ip), server_ip);
+    ds_put_cstr(action, "outport = inport; inport = \"\"; "
+                    "/* Allow sending out inport. */ output;");
+    return true;
+}
+
 static void
 build_acls(struct ovn_datapath *od, struct hmap *lflows, struct hmap *ports)
 {
@@ -1545,8 +1617,8 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
     }
 
-    /* Ingress table 1 and 2: Port security - IP and ND, by default goto next.
-     * (priority 0)*/
+    /* Ingress table 1 and 2: Port security - IP and ND, tabl3 - DCHP
+     * by default goto next. (priority 0)*/
     HMAP_FOR_EACH (od, key_node, datapaths) {
         if (!od->nbs) {
             continue;
@@ -1554,9 +1626,50 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
 
         ovn_lflow_add(lflows, od, S_SWITCH_IN_PORT_SEC_ND, 0, "1", "next;");
         ovn_lflow_add(lflows, od, S_SWITCH_IN_PORT_SEC_IP, 0, "1", "next;");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_DHCP, 0, "1", "next;");
     }
 
-    /* Ingress table 3: ARP responder, skip requests coming from localnet ports.
+    /* Logical switch ingress table 3: DHCP priority 50. */
+    HMAP_FOR_EACH (op, key_node, ports) {
+       if (!op->nbs) {
+           continue;
+       }
+
+       if (!lport_is_enabled(op->nbs)) {
+           /* Drop packets from disabled logical ports (since logical flow
+            * tables are default-drop). */
+           continue;
+       }
+
+       for (size_t i = 0; i < op->nbs->n_addresses; i++) {
+           struct lport_addresses laddrs;
+           if (!extract_lport_addresses(op->nbs->addresses[i], &laddrs,
+                                        false)) {
+               continue;
+           }
+
+           if (!laddrs.n_ipv4_addrs) {
+               continue;
+           }
+
+           struct ds action = DS_EMPTY_INITIALIZER;
+           if (build_dhcp_action(op, laddrs.ipv4_addrs[0].addr, &action)) {
+               struct ds match = DS_EMPTY_INITIALIZER;
+               ds_put_format(&match, "inport == %s && eth.src == "ETH_ADDR_FMT
+                             " && ip4.src == 0.0.0.0 && "
+                             "ip4.dst == 255.255.255.255 && udp.src == 68 && "
+                             "udp.dst == 67", op->json_key,
+                             ETH_ADDR_ARGS(laddrs.ea));
+
+               ovn_lflow_add(lflows, op->od, S_SWITCH_IN_DHCP, 50,
+                             ds_cstr(&match), ds_cstr(&action));
+               ds_destroy(&match);
+           }
+           ds_destroy(&action);
+       }
+    }
+
+    /* Ingress table 6: ARP responder, skip requests coming from localnet ports.
      * (priority 100). */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbs) {
@@ -1571,7 +1684,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
     }
 
-    /* Ingress table 5: ARP responder, reply for known IPs.
+    /* Ingress table 6: ARP responder, reply for known IPs.
      * (priority 50). */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbs) {
@@ -1621,7 +1734,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
     }
 
-    /* Ingress table 5: ARP responder, by default goto next.
+    /* Ingress table 6: ARP responder, by default goto next.
      * (priority 0)*/
     HMAP_FOR_EACH (od, key_node, datapaths) {
         if (!od->nbs) {
@@ -1631,7 +1744,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         ovn_lflow_add(lflows, od, S_SWITCH_IN_ARP_RSP, 0, "1", "next;");
     }
 
-    /* Ingress table 6: Destination lookup, broadcast and multicast handling
+    /* Ingress table 7: Destination lookup, broadcast and multicast handling
      * (priority 100). */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbs) {
@@ -1651,7 +1764,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                       "outport = \""MC_FLOOD"\"; output;");
     }
 
-    /* Ingress table 6: Destination lookup, unicast handling (priority 50), */
+    /* Ingress table 7: Destination lookup, unicast handling (priority 50), */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbs) {
             continue;
@@ -1688,7 +1801,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
     }
 
-    /* Ingress table 6: Destination lookup for unknown MACs (priority 0). */
+    /* Ingress table 7: Destination lookup for unknown MACs (priority 0). */
     HMAP_FOR_EACH (od, key_node, datapaths) {
         if (!od->nbs) {
             continue;
@@ -1698,6 +1811,28 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
             ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_LKUP, 0, "1",
                           "outport = \""MC_UNKNOWN"\"; output;");
         }
+    }
+
+    /* Egress table 0: dhcp response - Priority 100 flow to skip ACL
+     * stages for dhcp response from ovn-controller.
+     * Priority 0 flow to advance to the next stage
+     */
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbs) {
+            continue;
+        }
+
+        const char *server_id = smap_get(&od->nbs->dhcp_options, "server_id");
+        const char *server_mac = smap_get(&od->nbs->dhcp_options, "server_mac");
+        if (server_id && server_mac) {
+            struct ds match = DS_EMPTY_INITIALIZER;
+            ds_put_format(&match, "eth.src == %s && ip4.src == %s &&"
+                          " udp && udp.src == 67 && udp.dst == 68", server_mac,
+                          server_id);
+            ovn_lflow_add(lflows, od, S_SWITCH_OUT_DHCP, 100, ds_cstr(&match),
+                          "/* Skip ACL stages for dhcp response */ next(3);");
+        }
+        ovn_lflow_add(lflows, od, S_SWITCH_OUT_DHCP, 0, "1", "next;");
     }
 
     /* Egress table 2: Egress port security - IP (priority 0)
