@@ -20,14 +20,19 @@
 #include "actions.h"
 #include "byte-order.h"
 #include "compiler.h"
+#include "dhcp.h"
 #include "expr.h"
 #include "lex.h"
 #include "logical-fields.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/ofp-actions.h"
 #include "openvswitch/ofpbuf.h"
+#include "packets.h"
+#include "shash.h"
 #include "simap.h"
 
+#include "openvswitch/vlog.h"
+VLOG_DEFINE_THIS_MODULE(ovn_actions);
 /* Context maintained during actions_parse(). */
 struct action_context {
     const struct action_params *ap; /* Parameters. */
@@ -186,13 +191,15 @@ add_prerequisite(struct action_context *ctx, const char *prerequisite)
 }
 
 static size_t
-start_controller_op(struct ofpbuf *ofpacts, enum action_opcode opcode)
+start_controller_op(struct ofpbuf *ofpacts, enum action_opcode opcode,
+                    bool pause)
 {
     size_t ofs = ofpacts->size;
 
     struct ofpact_controller *oc = ofpact_put_CONTROLLER(ofpacts);
     oc->max_len = UINT16_MAX;
     oc->reason = OFPR_ACTION;
+    oc->pause = pause;
 
     struct action_header ah = { .opcode = htonl(opcode) };
     ofpbuf_put(ofpacts, &ah, sizeof ah);
@@ -212,7 +219,7 @@ finish_controller_op(struct ofpbuf *ofpacts, size_t ofs)
 static void
 put_controller_op(struct ofpbuf *ofpacts, enum action_opcode opcode)
 {
-    size_t ofs = start_controller_op(ofpacts, opcode);
+    size_t ofs = start_controller_op(ofpacts, opcode, false);
     finish_controller_op(ofpacts, ofs);
 }
 
@@ -246,7 +253,9 @@ parse_arp_action(struct action_context *ctx)
      * converted to OpenFlow, as its userdata.  ovn-controller will convert the
      * packet to an ARP and then send the packet and actions back to the switch
      * inside an OFPT_PACKET_OUT message. */
-    size_t oc_offset = start_controller_op(ctx->ofpacts, ACTION_OPCODE_ARP);
+    /* controller. */
+    size_t oc_offset = start_controller_op(ctx->ofpacts, ACTION_OPCODE_ARP,
+                                           false);
     ofpacts_put_openflow_actions(inner_ofpacts.data, inner_ofpacts.size,
                                  ctx->ofpacts, OFP13_VERSION);
     finish_controller_op(ctx->ofpacts, oc_offset);
@@ -258,6 +267,141 @@ parse_arp_action(struct action_context *ctx)
 
     /* Free memory. */
     ofpbuf_uninit(&inner_ofpacts);
+}
+
+static bool
+parse_dhcp_option(struct action_context *ctx, struct ofpbuf *dhcp_opts)
+{
+    if (ctx->lexer->token.type != LEX_T_ID) {
+        action_syntax_error(ctx, NULL);
+        return false;
+    }
+
+    enum lex_type lookahead = lexer_lookahead(ctx->lexer);
+    if (lookahead != LEX_T_EQUALS) {
+        action_syntax_error(ctx, NULL);
+        return false;
+    }
+
+    const struct dhcp_opts_map *dhcp_opt = dhcp_opts_find(
+        ctx->ap->dhcp_opts, ctx->lexer->token.s);
+
+    if (!dhcp_opt) {
+        action_syntax_error(ctx, "expecting valid dhcp option.");
+        return false;
+    }
+
+    lexer_get(ctx->lexer);
+    lexer_get(ctx->lexer);
+
+    struct expr_constant_set cs;
+    memset(&cs, 0, sizeof(struct expr_constant_set));
+    if (!expr_parse_constant_set(ctx->lexer, NULL, &cs)) {
+        action_syntax_error(ctx, "invalid dhcp option values");
+        return false;
+    }
+
+    if (!lexer_match(ctx->lexer, LEX_T_COMMA) && (
+        ctx->lexer->token.type != LEX_T_RPAREN)) {
+        action_syntax_error(ctx, NULL);
+        return false;
+    }
+
+
+    if (dhcp_opt->code == 0) {
+        /* offer-ip */
+        ofpbuf_push(dhcp_opts, &cs.values[0].value.ipv4, sizeof(ovs_be32));
+        goto exit;
+    }
+
+    uint8_t *opt_header = ofpbuf_put_uninit(dhcp_opts, 2);
+    opt_header[0] = dhcp_opt->code;
+
+
+    switch(dhcp_opt->type) {
+    case DHCP_OPT_TYPE_BOOL:
+    case DHCP_OPT_TYPE_UINT8:
+        opt_header[1] = 1;
+        uint8_t val = cs.values[0].value.u8[127];
+        ofpbuf_put(dhcp_opts, &val, 1);
+        break;
+
+    case DHCP_OPT_TYPE_UINT16:
+        opt_header[1] = 2;
+        ofpbuf_put(dhcp_opts, &cs.values[0].value.be16[63], 2);
+        break;
+
+    case DHCP_OPT_TYPE_UINT32:
+        opt_header[1] = 4;
+        ofpbuf_put(dhcp_opts, &cs.values[0].value.be32[31], 4);
+        break;
+
+    case DHCP_OPT_TYPE_IP4:
+        opt_header[1] = 0;
+        for (size_t i = 0; i < cs.n_values; i++) {
+            ofpbuf_put(dhcp_opts, &cs.values[i].value.ipv4, sizeof(ovs_be32));
+            opt_header[1] += sizeof(ovs_be32);
+        }
+        break;
+
+    case DHCP_OPT_TYPE_STATIC_ROUTES:
+    {
+        size_t no_of_routes = cs.n_values;
+        if (no_of_routes % 2) {
+            no_of_routes -= 1;
+        }
+        opt_header[1] = 0;
+        for (size_t i = 0; i < no_of_routes; i+= 2) {
+            uint8_t plen = 32;
+            if (cs.values[i].masked) {
+                plen = (uint8_t) ip_count_cidr_bits(cs.values[i].mask.ipv4);
+            }
+            ofpbuf_put(dhcp_opts, &plen, 1);
+            ofpbuf_put(dhcp_opts, &cs.values[i].value.ipv4, plen / 8);
+            ofpbuf_put(dhcp_opts, &cs.values[i + 1].value.ipv4,
+                       sizeof(ovs_be32));
+            opt_header[1] += (1 + (plen / 8) + sizeof(ovs_be32)) ;
+        }
+        break;
+    }
+
+    case DHCP_OPT_TYPE_STR:
+        opt_header[1] = strlen(cs.values[0].string);
+        ofpbuf_put(dhcp_opts, cs.values[0].string, opt_header[1]);
+        break;
+    }
+
+exit:
+    expr_constant_set_destroy(&cs);
+    return true;
+}
+
+static void
+parse_dhcp_offer_action(struct action_context *ctx)
+{
+    if (!lexer_match(ctx->lexer, LEX_T_LPAREN)) {
+        action_syntax_error(ctx, "expecting `('");
+        return;
+    }
+
+    uint64_t dhcp_opts_stub[1024 / 8];
+    struct ofpbuf dhcp_opts = OFPBUF_STUB_INITIALIZER(dhcp_opts_stub);
+
+    /* Parse inner actions. */
+    while (!lexer_match(ctx->lexer, LEX_T_RPAREN)) {
+        if (!parse_dhcp_option(ctx, &dhcp_opts)) {
+            return;
+        }
+    }
+
+    /* controller. */
+    size_t oc_offset = start_controller_op(ctx->ofpacts,
+                                           ACTION_OPCODE_DHCP_OFFER, true);
+    ofpbuf_put(ctx->ofpacts, dhcp_opts.data, dhcp_opts.size);
+    finish_controller_op(ctx->ofpacts, oc_offset);
+
+    /* Free memory. */
+    ofpbuf_uninit(&dhcp_opts);
 }
 
 static bool
@@ -475,6 +619,8 @@ parse_action(struct action_context *ctx)
         parse_get_arp_action(ctx);
     } else if (lexer_match_id(ctx->lexer, "put_arp")) {
         parse_put_arp_action(ctx);
+    } else if (lexer_match_id(ctx->lexer, "dhcp_offer")) {
+        parse_dhcp_offer_action(ctx);
     } else {
         action_syntax_error(ctx, "expecting action");
     }

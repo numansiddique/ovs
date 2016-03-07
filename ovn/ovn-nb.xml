@@ -78,6 +78,167 @@
         See <em>External IDs</em> at the beginning of this document.
       </column>
     </group>
+
+    <group title="Dhcp options">
+      <column name="dhcp_options">
+        <p>
+          OVN implements a native DHCP support which caters to the common
+          use case of providing an IP address to a booting instance by providing
+          stateless replies to DHCP requests based on statically configured
+          address mappings. To do this it allows a short list of DHCP options to be
+          configured and applied at each compute host running ovn-controller.
+
+          This column is a key/value pair with key being the <code>cidr</code>
+          of the subnet belonging to this logical switch and value being the
+          <code>DHCP options</code> defined as a valid JSON string with
+          key/value pairs as DHCP options. All the values should be strings.
+
+          <p>
+            Examples:
+          </p>
+
+          <dl>
+            <dt><code>key: '10.0.0.0/24'</code></dt>
+            <dd>
+              This indicates that the DHCP options defined in the value should be used
+              for DHCP requests from the logical ports having the IPv4 addresses from
+              this subnet.
+            </dd>
+
+            <dt><code>value: </code></dt>
+            <dd>
+              <p>
+                "{"server_id": "10.0.0.1", "lease_time": "43200",
+                  "mtu": "1450", "netmask": "255.255.255.0",
+                  "router": "10.0.0.1", "server_mac": "fa:16:3e:3e:b8:8a"}"
+              </p>
+            </dd>
+          </dl>
+        </p>
+
+        <p>
+          <code>Supported DHCP options</code>
+        </p>
+
+        <p>
+          Below are the supported DHCP options whose values are IPv4 address
+          or addresses. If the value has more than one IPv4 address, then it
+          should be enclosed within '{}' braces.
+        </p>
+
+        <dl>
+          <dt><code>netmask</code></dt>
+
+          <dt><code>router</code></dt>
+
+          <dt><code>dns_server</code></dt>
+
+          <dt><code>log_server</code></dt>
+
+          <dt><code>lpr_server</code></dt>
+
+          <dt><code>swap_server</code></dt>
+
+          <dt><code>policy_filter</code></dt>
+
+          <dt><code>router_solicitation</code></dt>
+
+          <dt><code>nis_server</code></dt>
+
+          <dt><code>ntp_server</code></dt>
+
+          <dt><code>tftp_server</code></dt>
+
+          <dt><code>server_id</code></dt>
+
+          <dt><code>router_solicitation</code></dt>
+
+          <dt><code>classless_static_route</code></dt>
+          <dd>
+           This option can contain one or more static routes, each of which
+           consists of a destination descriptor and the IP address of the router
+           that should be used to reach that destination. Please see RFC 3442
+           for more details.
+          </dd>
+        </dl>
+
+        <p>
+         <p>
+           <code>Examples</code>
+         </p>
+
+         <dl>
+           <dt><code>"router": "10.0.0.1"</code></dt>
+
+           <dt><code>"dns_server": "{7.7.7.7,8.8.8.8}"</code></dt>
+
+           <dt><code>"classless_static_route": "{40.0.0.0/24,10.0.0.2, 0.0.0.0/0,10.0.0.1}"</code></dt>
+           <dd>
+             The route <code>0.0.0.0/0,10.0.0.1</code> indicates the default gateway.
+           </dd>
+         </dl>
+        </p>
+
+        <p>
+          Below are the other supported DHCP options
+        </p>
+
+        <dl>
+          <dt><code>ip_forward_enable</code></dt>
+          <dd>
+            <p>
+              type: <code>bool</code>
+            </p>
+
+            <p>
+              Example: <code>"ip_forward_enable": "1"</code>
+            </p>
+          </dd>
+
+          <dt><code>router_discovery</code></dt>
+          <dd>
+            type: <code>bool</code>
+          </dd>
+
+          <dt><code>ethernet_encap</code></dt>
+          <dd>
+            type: <code>bool</code>
+          </dd>
+
+          <dt><code>default_ttl</code></dt>
+          <dd>
+            <p>
+              type: <code>uint8</code>
+            </p>
+            <p>
+              Example: <code>"default_ttl": "100"</code>
+            </p>
+          </dd>
+
+          <dt><code>tcp_ttl</code></dt>
+          <dd>
+            type: <code>uint8</code>
+          </dd>
+
+          <dt><code>mtu</code></dt>
+          <dd>
+            <p>
+              type: <code>uint16</code>
+            </p>
+
+            <p>
+              Example: <code>"mtu": "1450"</code>
+            </p>
+          </dd>
+
+          <dt><code>lease_time</code></dt>
+          <dd>
+            type: <code>uint32</code>
+          </dd>
+        </dl>
+      </column>
+
+    </group>
   </table>
 
   <table name="Logical_Port" title="L2 logical switch port">
@@ -210,6 +371,28 @@
         <column name="options" key="policing_burst">
           If set, indicates the maximum burst size for data sent from this
           interface, in kb.
+        </column>
+      </group>
+
+      <group title="DHCP Options">
+        <p>
+          These options apply to logical ports with <ref column="type"/> having
+          (empty string)
+        </p>
+
+        <column name="options" key="dhcp_opt_OPTION_NAME">
+          Each logical port can override the DHCP options defined in the
+          <ref column="dhcp_options"/> of <ref table="Logical_Switch"/>
+          by defining them in this column with the prefix "dhcp_opt_".
+          Please see the <ref column="dhcp_options"/> of
+          <ref table="Logical_Switch"/> for supported DHCP options.
+
+          Example: key="dhcp_opt_mtu", value="1300"
+        </column>
+
+        <column name="options" key="dhcp_disabled">
+          If this is defined, <code>ovn-northd</code> will disable the native
+          DHCP responder for the logical port.
         </column>
       </group>
     </group>

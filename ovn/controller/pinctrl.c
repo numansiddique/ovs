@@ -17,10 +17,13 @@
 
 #include "pinctrl.h"
 
+
 #include "coverage.h"
+#include "csum.h"
 #include "dirs.h"
 #include "dp-packet.h"
 #include "flow.h"
+#include "lib/dhcp.h"
 #include "lport.h"
 #include "openvswitch/ofp-actions.h"
 #include "openvswitch/ofp-msgs.h"
@@ -192,13 +195,106 @@ exit:
 }
 
 static void
+pinctl_handle_dhcp_offer(struct dp_packet *pkt, struct ofputil_packet_in *pin,
+                         struct ofpbuf *userdata, struct ofpbuf *continuation)
+{
+    enum ofp_version version = rconn_get_version(swconn);
+    enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
+
+    ovs_be32 *offer_ip = ofpbuf_pull(userdata, sizeof *offer_ip);
+    const uint8_t *payload = dp_packet_get_udp_payload(pkt);
+    payload = (payload + sizeof (struct dhcp_header) + sizeof(uint32_t));
+
+    if (payload[0] != DHCP_OPT_MSG_TYPE && (payload[2] != DHCP_MSG_DISCOVER ||
+                                            payload[2] != DHCP_MSG_REQUEST)) {
+        /* If its not a valid dhcp packet resume the packet without any
+         * changes */
+        goto exit;
+    }
+
+    uint8_t msg_type;
+    if (payload[2] == DHCP_MSG_DISCOVER) {
+        msg_type = DHCP_MSG_OFFER;
+    } else {
+        msg_type = DHCP_MSG_ACK;
+    }
+
+    /* Total dhcp options length will be options stored in the userdata +
+     * 16 bytes.
+     *
+     * --------------------------------------------------------------
+     *| 4 Bytes (dhcp cookie) | 3 Bytes (option type) | dhcp options |
+     * --------------------------------------------------------------
+     *| 4 Bytes padding | 1 Byte (option end 0xFF ) | 4 Bytes padding|
+     * --------------------------------------------------------------
+     */
+    uint16_t new_udp_len = UDP_HEADER_LEN + DHCP_HEADER_LEN + \
+                           userdata->size + 16;
+    size_t new_packet_len = ETH_HEADER_LEN + IP_HEADER_LEN + new_udp_len;
+
+    struct dp_packet packet;
+    dp_packet_init(&packet, new_packet_len);
+    dp_packet_clear(&packet);
+    dp_packet_prealloc_tailroom(&packet, new_packet_len);
+
+    dp_packet_put(&packet, dp_packet_pull(pkt, ETH_HEADER_LEN),
+                  ETH_HEADER_LEN);
+    struct ip_header *ip = dp_packet_put(
+        &packet, dp_packet_pull(pkt, IP_HEADER_LEN), IP_HEADER_LEN);
+
+    struct udp_header *udp = dp_packet_put(
+        &packet, dp_packet_pull(pkt, UDP_HEADER_LEN), UDP_HEADER_LEN);
+
+    struct dhcp_header *dhcp_data = dp_packet_put(
+        &packet, dp_packet_pull(pkt, DHCP_HEADER_LEN), DHCP_HEADER_LEN);
+    dhcp_data->op = DHCP_OP_REPLY;
+    dhcp_data->yiaddr = *offer_ip;
+
+    ovs_be32 magic_cookie = htonl(DHCP_MAGIC_COOKIE);
+    dp_packet_put(&packet, &magic_cookie, sizeof(ovs_be32));
+
+    uint8_t *dhcp_options = dp_packet_put_zeros(&packet, userdata->size + 12);
+
+    /* Dhcp option - type */
+    dhcp_options[0] = (uint8_t) DHCP_OPT_MSG_TYPE;
+    dhcp_options[1] = (uint8_t) 1;
+    dhcp_options[2] = msg_type;
+    dhcp_options += 3;
+
+    memcpy(dhcp_options, userdata->data, userdata->size);
+    dhcp_options += userdata->size;
+
+    /* Padding */
+    dhcp_options += 4;
+
+    /* End */
+    dhcp_options[0] = DHCP_OPT_END;
+
+    udp->udp_len = htons(new_udp_len);
+    ip->ip_tos = 0;
+    ip->ip_tot_len = htons(IP_HEADER_LEN + new_udp_len);
+    udp->udp_csum = 0;
+    ip->ip_csum = 0;
+    ip->ip_csum = csum(ip, sizeof *ip);
+
+    pin->packet = dp_packet_data(&packet);
+    pin->packet_len = dp_packet_size(&packet);
+
+exit:
+    queue_msg(ofputil_encode_resume(pin, continuation, proto));
+    dp_packet_uninit(&packet);
+}
+
+static void
 process_packet_in(const struct ofp_header *msg)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
     struct ofputil_packet_in pin;
+    struct ofpbuf continuation;
     enum ofperr error = ofputil_decode_packet_in(msg, true, &pin,
-                                                 NULL, NULL, NULL);
+                                                 NULL, NULL, &continuation);
+
     if (error) {
         VLOG_WARN_RL(&rl, "error decoding packet-in: %s",
                      ofperr_to_string(error));
@@ -230,6 +326,9 @@ process_packet_in(const struct ofp_header *msg)
         pinctrl_handle_put_arp(&pin.flow_metadata.flow, &headers);
         break;
 
+    case ACTION_OPCODE_DHCP_OFFER:
+        pinctl_handle_dhcp_offer(&packet, &pin, &userdata, &continuation);
+        break;
     default:
         VLOG_WARN_RL(&rl, "unrecognized packet-in opcode %"PRIu32,
                      ntohl(ah->opcode));
@@ -240,6 +339,7 @@ process_packet_in(const struct ofp_header *msg)
 static void
 pinctrl_recv(const struct ofp_header *oh, enum ofptype type)
 {
+
     if (type == OFPTYPE_ECHO_REQUEST) {
         queue_msg(make_echo_reply(oh));
     } else if (type == OFPTYPE_GET_CONFIG_REPLY) {
