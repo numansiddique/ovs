@@ -478,6 +478,52 @@ nbctl_lswitch_list(struct ctl_context *ctx)
     smap_destroy(&lswitches);
     free(nodes);
 }
+
+static void
+nbctl_lswitch_set_dhcp_options(struct ctl_context *ctx)
+{
+    const char *id = ctx->argv[1];
+    const struct nbrec_logical_switch *lswitch;
+    size_t i;
+    struct smap dhcp_options = SMAP_INITIALIZER(&dhcp_options);
+
+    lswitch = lswitch_by_name_or_uuid(ctx, id);
+    if (!lswitch) {
+        return;
+    }
+
+    for (i = 2; i < ctx->argc; i++) {
+        char *key, *value;
+        value = xstrdup(ctx->argv[i]);
+        key = strsep(&value, "=");
+        if (value) {
+            smap_add(&dhcp_options, key, value);
+        }
+        free(key);
+    }
+
+    nbrec_logical_switch_set_dhcp_options(lswitch, &dhcp_options);
+
+    smap_destroy(&dhcp_options);
+}
+
+static void
+nbctl_lswitch_get_dhcp_options(struct ctl_context *ctx)
+{
+    const char *id = ctx->argv[1];
+    const struct nbrec_logical_switch *lswitch;
+    struct smap_node *node;
+
+    lswitch = lswitch_by_name_or_uuid(ctx, id);
+    if (!lswitch) {
+        return;
+    }
+
+    SMAP_FOR_EACH(node, &lswitch->dhcp_options) {
+        ds_put_format(&ctx->output, "%s=%s\n", node->key, node->value);
+    }
+}
+
 
 static const struct nbrec_logical_port *
 lport_by_name_or_uuid(struct ctl_context *ctx, const char *id)
@@ -1311,6 +1357,11 @@ static const struct ctl_command_syntax nbctl_commands[] = {
     { "lswitch-del", 1, 1, "LSWITCH", NULL, nbctl_lswitch_del,
       NULL, "", RW },
     { "lswitch-list", 0, 0, "", NULL, nbctl_lswitch_list, NULL, "", RO },
+    { "lswitch-set-dhcp-options", 1, INT_MAX,
+      "LSWITCH KEY=VALUE [KEY=VALUE]...", NULL, nbctl_lswitch_set_dhcp_options,
+      NULL, "", RW },
+    { "lswitch-get-dhcp-options", 1, 1, "LSWITCH", NULL,
+      nbctl_lswitch_get_dhcp_options, NULL, "", RO },
 
     /* acl commands. */
     { "acl-add", 5, 5, "LSWITCH DIRECTION PRIORITY MATCH ACTION", NULL,
