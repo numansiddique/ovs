@@ -2611,3 +2611,55 @@ OVS_APP_EXIT_AND_WAIT([ovs-vswitchd])
 OVS_APP_EXIT_AND_WAIT([ovsdb-server])
 
 AT_CLEANUP
+
+AT_SETUP([ovn -- put_dhcp_opts action])
+dhcp_options="offerip=10.0.0.4,router=10.0.0.1,netmask=255.255.254.0,mtu=1400"
+echo "dhcp_options = $dhcp_options"
+
+expected_dhcp_opts="0a00000403040a0000010104fffffe001a020578"
+AT_CHECK([ovstest test-ovn-put-dhcp-opts-action reg0 $dhcp_options \
+$expected_dhcp_opts], [0], [ignore])
+
+AT_CHECK([ovstest test-ovn-put-dhcp-opts-action reg2 $dhcp_options \
+$expected_dhcp_opts], [0], [ignore])
+
+AT_CHECK([ovstest test-ovn-put-dhcp-opts-action reg4 $dhcp_options \
+$expected_dhcp_opts], [0], [ignore])
+
+AT_CHECK([ovstest test-ovn-put-dhcp-opts-action reg5 $dhcp_options \
+$expected_dhcp_opts], [1], [ignore])
+
+AT_CHECK([ovstest test-ovn-put-dhcp-opts-action foo $dhcp_options \
+$expected_dhcp_opts], [1], [ignore])
+
+dhcp_options="offerip=10.0.0.4,router=10.0.0.1,netmask=255.255.255.0,mtu=1400,\
+ip_forward_enable=1,default_ttl=121,dns_server={8.8.8.8,7.7.7.7},\
+classless_static_route={30.0.0.0/24,10.0.0.4,40.0.0.0/16,10.0.0.6,\
+0.0.0.0/0,10.0.0.1},ethernet_encap=1"
+
+# offerip=10.0.0.4           --> 0a000004
+# router=10.0.0.1            --> 03040a000001
+# netmask=255.255.255.0      --> 0104ffffff00
+# mtu=1400                   --> 1a020578
+# ip_forward_enable-1        --> 130101
+# default_ttl=121            --> 170179
+# dns_server={8.8.8.8,7.7.7.7} --> 06080808080807070707
+# classless_static_route=      --> 7914
+# {30.0.0.0/24,10.0.0.4       --> 181e00000a000004
+#  40.0.0.0/16,10.0.0.6       --> 1028000a000006
+#  0.0.0.0/0,10.0.0.1}        --> 000a000001
+# ethernet_encap=1            --> 240101
+# router_discovery=0          --> 1f0100
+
+expected_dhcp_opts="0a00000403040a0000010104ffffff001a020578130101170179\
+060808080808070707077914181e00000a0000041028000a000006000a000001240101"
+
+AT_CHECK([ovstest test-ovn-put-dhcp-opts-action reg1 $dhcp_options \
+$expected_dhcp_opts], [0], [ignore])
+
+dhcp_options="offerip=10.0.0.4,invalid_options=inv_value"
+expected_dhcp_opts="00"
+AT_CHECK([ovstest test-ovn-put-dhcp-opts-action reg0 $dhcp_options $expected_dhcp_opts],
+         [1], [ignore])
+
+AT_CLEANUP
