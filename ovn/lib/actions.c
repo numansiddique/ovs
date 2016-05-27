@@ -32,6 +32,8 @@
 #include "simap.h"
 
 
+#define DHCPV6_PKT_OUT
+
 /* Context maintained during actions_parse(). */
 struct action_context {
     const struct action_params *ap; /* Parameters. */
@@ -608,6 +610,115 @@ parse_put_dhcp_opts_action(struct action_context *ctx)
     finish_controller_op(ctx->ofpacts, oc_offset);
 }
 
+static bool
+parse_dhcpv6_opt(struct action_context *ctx, struct ofpbuf *ofpacts)
+{
+    if (ctx->lexer->token.type != LEX_T_ID) {
+        action_syntax_error(ctx, NULL);
+        return false;
+    }
+
+    enum lex_type lookahead = lexer_lookahead(ctx->lexer);
+    if (lookahead != LEX_T_EQUALS) {
+        action_syntax_error(ctx, NULL);
+        return false;
+    }
+
+    const struct dhcp_opts_map *dhcp_opt = dhcp_opts_find(
+        ctx->ap->dhcp_opts, ctx->lexer->token.s);
+
+    if (!dhcp_opt) {
+        action_syntax_error(ctx, "expecting valid dhcp option.");
+        return false;
+    }
+
+    lexer_get(ctx->lexer);
+    lexer_get(ctx->lexer);
+
+    struct expr_constant_set cs;
+    memset(&cs, 0, sizeof(struct expr_constant_set));
+    if (!expr_parse_constant_set(ctx->lexer, NULL, &cs)) {
+        action_syntax_error(ctx, "invalid dhcp option values");
+        return false;
+    }
+
+    if (!strcmp(dhcp_opt->type, "str")) {
+        if (cs.type != EXPR_C_STRING) {
+            return false;
+        }
+    } else {
+        if (cs.type != EXPR_C_INTEGER) {
+            return false;
+        }
+    }
+
+    if (!lexer_match(ctx->lexer, LEX_T_COMMA) && (
+        ctx->lexer->token.type != LEX_T_RPAREN)) {
+        action_syntax_error(ctx, NULL);
+        return false;
+    }
+
+    struct dhcp_opt6_header *opt = ofpbuf_put_uninit(ofpacts, sizeof *opt);
+    opt->code = dhcp_opt->code;
+
+    if (!strcmp(dhcp_opt->type, "ipv6")) {
+        opt->len = cs.n_values * sizeof(struct in6_addr);
+        for (size_t i = 0; i < cs.n_values; i++) {
+            ofpbuf_put(ofpacts, &cs.values[i].value.ipv6,
+                       sizeof(struct in6_addr));
+        }
+    } else if (!strcmp(dhcp_opt->type, "mac")) {
+        opt->len = sizeof(struct eth_addr);
+        ofpbuf_put(ofpacts, &cs.values[0].value.mac, opt->len);
+    } else if (!strcmp(dhcp_opt->type, "str")) {
+        opt->len = strlen(cs.values[0].string);
+        ofpbuf_put(ofpacts, cs.values[0].string, opt->len);
+    }
+
+    expr_constant_set_destroy(&cs);
+    return true;
+}
+
+static void
+parse_put_dhcpv6_opts_action(struct action_context *ctx)
+{
+    if (!action_force_match(ctx, LEX_T_LPAREN)) {
+        return;
+    }
+
+    const struct expr_symbol *symbol =
+        shash_find_data(ctx->ap->symtab, ctx->lexer->token.s);
+
+    /* Allowed registers to store the result are reg0 to reg4 */
+    if (!symbol || (
+            symbol->field->id < MFF_REG0 && symbol->field->id > MFF_REG4)) {
+        return;
+    }
+
+    lexer_get(ctx->lexer);
+    if (!action_force_match(ctx, LEX_T_COMMA)) {
+        return;
+    }
+
+    /* controller. */
+#ifndef DHCPV6_PKT_OUT
+    size_t oc_offset = start_controller_op(
+        ctx->ofpacts, ACTION_OPCODE_PUT_DHCPV6_OPTS, true);
+#else
+    size_t oc_offset = start_controller_op(
+        ctx->ofpacts, ACTION_OPCODE_PUT_DHCPV6_OPTS, false);
+#endif
+    uint32_t *reg_idx = ofpbuf_put_uninit(ctx->ofpacts, sizeof(uint32_t));
+    *reg_idx = symbol->field->id - MFF_REG0;
+
+    while (!lexer_match(ctx->lexer, LEX_T_RPAREN)) {
+        if (!parse_dhcpv6_opt(ctx, ctx->ofpacts)) {
+            return;
+        }
+    }
+    finish_controller_op(ctx->ofpacts, oc_offset);
+}
+
 static void
 emit_ct(struct action_context *ctx, bool recirc_next, bool commit)
 {
@@ -672,6 +783,8 @@ parse_action(struct action_context *ctx)
         parse_put_arp_action(ctx);
     } else if (lexer_match_id(ctx->lexer, "put_dhcp_opts")) {
         parse_put_dhcp_opts_action(ctx);
+    } else if (lexer_match_id(ctx->lexer, "put_dhcpv6_opts")) {
+        parse_put_dhcpv6_opts_action(ctx);
     } else {
         action_syntax_error(ctx, "expecting action");
     }
