@@ -66,6 +66,7 @@ struct dhcp_opts_map {
 #define DHCP_OPT_T1 DHCP_OPTION("T1", 58, "uint32")
 #define DHCP_OPT_T2 DHCP_OPTION("T2", 59, "uint32")
 
+
 static inline uint32_t
 dhcp_opt_hash(char *opt_name)
 {
@@ -107,5 +108,76 @@ dhcp_opts_destroy(struct hmap *dhcp_opts)
     }
     hmap_destroy(dhcp_opts);
 }
+
+struct dhcp_opt6_header {
+    uint16_t code;
+    uint16_t len;
+};
+
+/* Supported DHCPv6 Message Types */
+#define DHCPV6_MSG_TYPE_SOLICIT     1
+#define DHCPV6_MSG_TYPE_ADVT        2
+#define DHCPV6_MSG_TYPE_REQUEST     3
+#define DHCPV6_MSG_TYPE_CONFIRM     4
+#define DHCPV6_MSG_TYPE_REPLY       7
+#define DHCPV6_MSG_TYPE_DECLINE     9
+
+
+/* DHCPv6 Option codes */
+#define DHCPV6_OPT_CLIENT_ID_CODE   1
+#define DHCPV6_OPT_SERVER_ID_CODE   2
+#define DHCPV6_OPT_IA_NA_CODE       3
+#define DHCPV6_OPT_IA_ADDR_CODE     5
+#define DHCPV6_OPT_DNS_SERVER_CODE  23
+#define DHCPV6_OPT_DSL_CODE         24
+
+#define DHCPV6_OPT_SERVER_ID \
+    DHCP_OPTION("SERVER_ID", DHCPV6_OPT_SERVER_ID_CODE, "mac")
+
+#define DHCPV6_OPT_IA_ADDR  \
+    DHCP_OPTION("IA_ADDR", DHCPV6_OPT_IA_ADDR_CODE, "ipv6")
+
+#define DHCPV6_OPT_DNS_SERVER  \
+    DHCP_OPTION("DNS_RECURSIVE_SERVER", DHCPV6_OPT_DNS_SERVER_CODE, "ipv6")
+
+#define DHCPV6_OPT_DSL \
+    DHCP_OPTION("DOMAIN_SEARCH_LIST", DHCPV6_OPT_DSL_CODE, "str")
+
+OVS_PACKED(
+struct dhcpv6_opt_header {
+    ovs_be16 code;
+    ovs_be16 len;
+});
+
+OVS_PACKED(
+struct dhcpv6_opt_server_id {
+    struct dhcpv6_opt_header opt;
+    ovs_be16 duid_type;
+    ovs_be16 hw_type;
+    struct eth_addr mac;
+});
+
+
+OVS_PACKED(
+struct dhcpv6_opt_ia_addr {
+    struct dhcpv6_opt_header opt;
+    struct in6_addr ipv6;
+    ovs_be32 t1;
+    ovs_be32 t2;
+});
+
+OVS_PACKED(
+struct dhcpv6_opt_ia_na {
+    struct dhcpv6_opt_header opt;
+    ovs_be32 iaid;
+    ovs_be32 t1;
+    ovs_be32 t2;
+});
+
+#define DHCPV6_DUID_LL      3
+#define DHCPV6_HW_TYPE_ETH  1
+
+#define DHCPV6_OPT_PAYLOAD(opt) \
+    (void *)((char *)opt + sizeof(struct dhcpv6_opt_header))
 
 #endif /* OVN_DHCP_H */

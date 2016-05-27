@@ -229,9 +229,19 @@
           Example: key="dhcp_opt_mtu", value="1300"
         </column>
 
+        <column name="options" key="dhcpv6_opt_OPTION_NAME">
+          Each logical port can override the DHCPv6 options defined in the
+          <ref column="dhcp_options"/> of <ref table="Subnet"/>
+          by defining them in this column with the prefix "dhcpv6_opt_".
+          Please see the <ref column="dhcp_options"/> of
+          <ref table="Subnet"/> for supported DHCPv6 options.
+
+          Example: key="dhcpv6_opt_DOMAIN_SEARCH_LIST", value="ovn.org"
+        </column>
+
         <column name="options" key="dhcp_disabled">
           If this is defined, <code>ovn-northd</code> will disable the native
-          DHCP responder for the logical port.
+          DHCPv4 and DHCPv6 responder for the logical port.
         </column>
       </group>
     </group>
@@ -655,32 +665,33 @@
     <column name="enable_dhcp">
       <p>
         If set to true, native DHCP support will be enabled for all the
-        logical ports having the IPv4 address from the subnet cidr.
+        logical ports having the IPv4/IPv6 address from the subnet cidr.
       </p>
     </column>
 
-    <group title="DHCP options">
+    <group title="DHCPv4 options">
       <column name="dhcp_options">
         <p>
-          OVN implements a native DHCP support which caters to the common
+          OVN implements a native DHCPv4 support which caters to the common
           use case of providing an IP address to a booting instance by
-          providing stateless replies to DHCP requests based on statically
+          providing stateless replies to DHCPv4 requests based on statically
           configured address mappings. To do this it allows a short list of
-          DHCP options to be configured and applied at each compute host
+          DHCPv4 options to be configured and applied at each compute host
           running ovn-controller.
         </p>
 
         <p>
-          CMS should define the set of DHCP options as key/value pairs.
-          The defined DHCP options will be include in the DHCP response to the
-          DHCP DISCOVER/REQUEST packet from the logical ports having the IPv4
-          addresses in the <ref column="cidr"/>.
+          CMS should define the set of DHCPv4 options as key/value pairs.
+          The defined DHCPv4 options will be include in the DHCPv4 response to
+          the DHCPv4 DISCOVER/REQUEST packet from the logical ports having the
+          IPv4 addresses in the <ref column="cidr"/>.
         </p>
       </column>
 
-      <group title="Supported DHCP options">
+      <group title="Supported DHCPv4 options">
+        
         <p>
-          Below are the supported DHCP options whose values are IPv4 address
+          Below are the supported DHCPv4 options whose values are IPv4 address
           or addresses. If the value has more than one IPv4 address, then it
           should be enclosed within '{}' braces. Please refer to the
           RFC 2132 <code>"https://tools.ietf.org/html/rfc2132"</code> for
@@ -689,7 +700,7 @@
 
         <column name="dhcp_options" key="netmask">
           <p>
-            The DHCP option code for this option is 1.
+            The DHCPv4 option code for this option is 1.
           </p>
 
           <p>
@@ -699,78 +710,78 @@
 
         <column name="dhcp_options" key="router">
           <p>
-            The DHCP option code for this option is 3.
+            The DHCPv4 option code for this option is 3.
           </p>
         </column>
 
         <column name="dhcp_options" key="dns_server">
           <p>
-            The DHCP option code for this option is 6.
+            The DHCPv4 option code for this option is 6.
           </p>
         </column>
 
         <column name="dhcp_options" key="log_server">
           <p>
-            The DHCP option code for this option is 7.
+            The DHCPv4 option code for this option is 7.
           </p>
         </column>
 
         <column name="dhcp_options" key="lpr_server">
           <p>
-            The DHCP option code for this option is 9.
+            The DHCPv4 option code for this option is 9.
           </p>
         </column>
 
         <column name="dhcp_options" key="swap_server">
           <p>
-            The DHCP option code for this option is 16.
+            The DHCPv4 option code for this option is 16.
           </p>
         </column>
 
         <column name="dhcp_options" key="policy_filter">
           <p>
-            The DHCP option code for this option is 21.
+            The DHCPv4 option code for this option is 21.
           </p>
         </column>
 
         <column name="dhcp_options" key="router_solicitation">
           <p>
-            The DHCP option code for this option is 32.
+            The DHCPv4 option code for this option is 32.
           </p>
         </column>
 
         <column name="dhcp_options" key="nis_server">
           <p>
-            The DHCP option code for this option is 41.
+            The DHCPv4 option code for this option is 41.
           </p>
         </column>
 
         <column name="dhcp_options" key="ntp_server">
           <p>
-            The DHCP option code for this option is 42.
+            The DHCPv4 option code for this option is 42.
           </p>
         </column>
 
         <column name="dhcp_options" key="server_id">
           <p>
-            The DHCP option code for this option is 54.
+            The DHCPv4 option code for this option is 54.
           </p>
         </column>
 
         <column name="dhcp_options" key="tftp_server">
           <p>
-            The DHCP option code for this option is 66.
+            The DHCPv4 option code for this option is 66.
           </p>
         </column>
 
         <column name="dhcp_options" key="classless_static_route">
           <p>
-            The DHCP option code for this option is 121.
+            The DHCPv4 option code for this option is 121.
           </p>
 
           <p>
              This option can contain one or more static routes, each of which
-             consists of a destination descriptor and the IP address of the
+             consists of a destination descriptor and the IPv4 address of the
              router that should be used to reach that destination. Please see
              RFC 3442 for more details.
           </p>
@@ -784,28 +795,28 @@
 
         <column name="dhcp_options" key="ms_classless_static_route">
           <p>
-            The DHCP option code for this option is 249. This option is
+            The DHCPv4 option code for this option is 249. This option is
             similar to <code>classless_static_route</code> supported by
-            Microsoft Windows DHCP clients.
+            Microsoft Windows DHCPv4 clients.
           </p>
         </column>
 
         <column name="dhcp_options" key="server_mac">
           <p>
-            <code>eth.src</code> will be set to this value in the DHCP
+            <code>eth.src</code> will be set to this value in the DHCPv4
             response packet.
           </p>
         </column>
       </group>
 
-      <group title="Other supported DHCP options">
+      <group title="Other supported DHCPv4 options">
         <column name="dhcp_options" key="ip_forward_enable">
           <p>
-            The DHCP option code for this option is 19.
+            The DHCPv4 option code for this option is 19.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>bool</code>.
+            The value of this DHCPv4 option is of type <code>bool</code>.
 
             Example. key="ip_forward_enable", value="1"
           </p>
@@ -813,31 +824,31 @@
 
         <column name="dhcp_options" key="router_discovery">
           <p>
-            The DHCP option code for this option is 31.
+            The DHCPv4 option code for this option is 31.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>bool</code>.
+            The value of this DHCPv4 option is of type <code>bool</code>.
           </p>
         </column>
 
         <column name="dhcp_options" key="ethernet_encap">
           <p>
-            The DHCP option code for this option is 36.
+            The DHCPv4 option code for this option is 36.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>bool</code>.
+            The value of this DHCPv4 option is of type <code>bool</code>.
           </p>
         </column>
 
         <column name="dhcp_options" key="default_ttl">
           <p>
-            The DHCP option code for this option is 23.
+            The DHCPv4 option code for this option is 23.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>uint8</code>.
+            The value of this DHCPv4 option is of type <code>uint8</code>.
 
             Example. key="default_ttl", value="128".
           </p>
@@ -845,31 +856,31 @@
 
         <column name="dhcp_options" key="tcp_ttl">
           <p>
-            The DHCP option code for this option is 37.
+            The DHCPv4 option code for this option is 37.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>uint8</code>.
+            The value of this DHCPv4 option is of type <code>uint8</code>.
           </p>
         </column>
 
         <column name="dhcp_options" key="mtu">
           <p>
-            The DHCP option code for this option is 26.
+            The DHCPv4 option code for this option is 26.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>uint16</code>.
+            The value of this DHCPv4 option is of type <code>uint16</code>.
           </p>
         </column>
 
         <column name="dhcp_options" key="lease_time">
           <p>
-            The DHCP option code for this option is 51.
+            The DHCPv4 option code for this option is 51.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>uint32</code>.
+            The value of this DHCPv4 option is of type <code>uint32</code>.
 
             Example. key="lease_time", value="42000"
           </p>
@@ -877,11 +888,11 @@
 
         <column name="dhcp_options" key="T1">
           <p>
-            The DHCP option code for this option is 58.
+            The DHCPv4 option code for this option is 58.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>uint32</code>.
+            The value of this DHCPv4 option is of type <code>uint32</code>.
 
             Example. key="T1", value="30000"
           </p>
@@ -889,23 +900,99 @@
 
         <column name="dhcp_options" key="T2">
           <p>
-            The DHCP option code for this option is 59.
+            The DHCPv4 option code for this option is 59.
           </p>
 
           <p>
-            The value of this DHCP option is of type <code>uint32</code>.
+            The value of this DHCPv4 option is of type <code>uint32</code>.
 
             Example. key="T2", value="40000"
           </p>
         </column>
       </group>
 
-      <group title="Mandatory DHCP options">
+      <group title="Mandatory DHCPv4 options">
         <p>
-          DHCP options <code>"server_id"</code>, <code>"server_mac"</code>
+          DHCPv4 options <code>"server_id"</code>, <code>"server_mac"</code>
           and <code>"lease_time"</code> are mandatory options which CMS should
-          define for <code>OVN</code> to support native DHCP.
+          define for <code>OVN</code> to support native DHCPv4.
         </p>
+      </group>
+    </group>
+
+    <group title="DHCPv6 options">
+      <column name="dhcp_options">
+        <p>
+          OVN also implements native DHCPv6 support. CMS should define
+          the set of DHCPv6 options as key/value pairs. The define DHCPv6
+          options will be included in the DHCPv6 response to the DHCPv6
+          Solicit/Request/Confirm packet from the logical ports having the
+          IPv6 addresses in the <ref column="cidr"/>.
+        </p>
+      </column>
+
+      <group title="Supported DHCPv6 options">
+        <p>
+          Below are the supported DHCPv6 options. Please refer the RFC 3315
+          which describes the DHCPv6 protocol.
+        </p>
+
+        <column name="dhcp_options" key="SERVER_ID">
+          <p>
+            The DHCPv6 option code for this option is 2. This option is used
+            to carry a DUID which identifies the Server.
+            <code>ovn-controller</code> defines DUID Based on
+            Link-layer Address [DUID-LL]
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type <code>MAC</code>.
+
+            Example. key="SERVER_ID", value="F0:00:00:00:00:01".
+          </p>
+        </column>
+
+        <column name="dhcp_options" key="IA_ADDR">
+          <p>
+            The DHCPv6 option code for this option is 5. This option is used to
+            specify the offered IPv6 address to the client.
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type <code>IPv6 address</code>.
+
+            Example. key="SERVER_ID", value="aef0::23:04".
+          </p>
+        </column>
+
+        <column name="dhcp_options" key="DNS_RECURSIVE_SERVER">
+          <p>
+            The DHCPv6 option code for this option is 23. This option is used
+            to specify the DNS servers.
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type
+            <code>IPv6 address(es)</code>.
+
+            Example. key="DNS_RECURSIVE_SERVER",
+            value="{aef0::23:01, aef0::23:02}".
+          </p>
+        </column>
+
+        <column name="dhcp_options" key="DOMAIN_SEARCH_LIST">
+          <p>
+            The DHCPv6 option code for this option is 24. This option is used
+            to specify the domain search list the client can use when resolving
+            hostnames with DNS.
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type <code>string</code>.
+
+            Example. key="DOMAIN_SEARCH_LIST", value="ovn.org".
+          </p>
+        </column>
       </group>
     </group>
   </table>

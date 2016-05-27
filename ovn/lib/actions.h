@@ -54,6 +54,11 @@ enum action_opcode {
      *   - Any number of DHCP options.
      */
     ACTION_OPCODE_PUT_DHCP_OPTS,
+
+    /* "put_dhcpv6_opts(reg_idx, ...dhcpv6 actions ...)".
+     *
+     */
+    ACTION_OPCODE_PUT_DHCPV6_OPTS,
 };
 
 /* Header. */
