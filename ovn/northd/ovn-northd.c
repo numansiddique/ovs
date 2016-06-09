@@ -1903,6 +1903,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
            for (size_t j = 0; j < laddrs.n_ipv6_addrs; j++) {
                struct ds pause_action = DS_EMPTY_INITIALIZER;
                 struct ds resume_action = DS_EMPTY_INITIALIZER;
+                printf("NUMAN : calling build_dhcpv6_action ...\n");
                 if (build_dhcpv6_action(op, &laddrs.ipv6_addrs[j].addr,
                                         &pause_action, &resume_action)) {
                   struct ds match = DS_EMPTY_INITIALIZER;
@@ -1916,6 +1917,9 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                   ovn_lflow_add(lflows, op->od, S_SWITCH_IN_DHCP_PAUSE, 100,
                                 ds_cstr(&match), ds_cstr(&pause_action));
 
+                  printf("NUMS : adding dhcpv6 flows : match = [%s] : resume "
+                         "action = [%s]\n", ds_cstr(&match),
+                         ds_cstr(&pause_action));
                   /* If reg0 is set to 1, it means the put_dhcpv6_opts action is
                    * successful */
                   ds_put_cstr(&match, " && reg0 == 1");

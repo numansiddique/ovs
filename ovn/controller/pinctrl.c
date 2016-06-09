@@ -401,6 +401,8 @@ compose_out_dhcpv6_opts(struct ofpbuf *userdata,
             return false;
         }
 
+        VLOG_WARN("compose_dhcpv6 : userdata opt code = [%d]",
+                  userdata_opt->code);
         switch(userdata_opt->code) {
         case DHCPV6_OPT_SERVER_ID_CODE:
         {
@@ -457,6 +459,13 @@ compose_out_dhcpv6_opts(struct ofpbuf *userdata,
             opt_ia_addr->opt.len = htons(userdata_opt->len + 8);
             memcpy(opt_ia_addr->ipv6.s6_addr, userdata_opt_data,
                    userdata_opt->len);
+
+            printf("NUMS : offered ip addr is : ");
+            for (int t = 0; t < userdata_opt->len; t++) {
+                if (userdata_opt_data[t]) {
+                      printf("ip[%d] = [%x]\n", t, userdata_opt_data[t]);
+                }
+            }
             opt_ia_addr->t1 = htonl(UINT32_MAX);
             opt_ia_addr->t2 = htonl(UINT32_MAX);
             break;
@@ -508,8 +517,12 @@ pinctrl_handle_put_dhcpv6_opts(
         goto exit;
     }
 
+    VLOG_WARN("pinctrl_handle_put_dhcpv6_opts entered");
     struct udp_header *in_udp = dp_packet_l4(pkt_in);
     const uint8_t *in_dhcpv6_data = dp_packet_get_udp_payload(pkt_in);
+
+    VLOG_WARN("pinctrl_handle_put_dhcpv6_opts : dhcpv6_msg_type = [%d]",
+              *in_dhcpv6_data);
     uint8_t out_dhcpv6_msg_type;
     switch(*in_dhcpv6_data) {
     case DHCPV6_MSG_TYPE_SOLICIT:
@@ -523,6 +536,7 @@ pinctrl_handle_put_dhcpv6_opts(
         break;
 
     default:
+        VLOG_WARN("Invalid msg type ..goto exit");
         /* Invalid or unsupported DHCPv6 message type */
         goto exit;
     }
@@ -567,6 +581,7 @@ pinctrl_handle_put_dhcpv6_opts(
         goto exit;
     }
 
+    VLOG_WARN("DCPV6_OPTS : IAID = [%x]", ntohs(iaid));
     uint64_t out_ofpacts_dhcpv6_opts_stub[256 / 8];
     struct ofpbuf out_dhcpv6_opts =
         OFPBUF_STUB_INITIALIZER(out_ofpacts_dhcpv6_opts_stub);
@@ -631,6 +646,8 @@ pinctrl_handle_put_dhcpv6_opts(
     pin->packet_len = dp_packet_size(&pkt_out);
     ofpbuf_uninit(&out_dhcpv6_opts);
     success = 1;
+    VLOG_WARN("put_dhcpv6_opts : Done.. setitng success to 1 and resuming the"
+               " packet");
 exit:
     /* store the result in the regx */
     if (reg_idx) {
@@ -652,6 +669,7 @@ process_packet_in(const struct ofp_header *msg)
     enum ofperr error = ofputil_decode_packet_in(msg, true, &pin,
                                                  NULL, NULL, &continuation);
 
+    VLOG_WARN("NUMAN : process_packet_in entered");
     if (error) {
         VLOG_WARN_RL(&rl, "error decoding packet-in: %s",
                      ofperr_to_string(error));
@@ -674,6 +692,8 @@ process_packet_in(const struct ofp_header *msg)
     struct flow headers;
     flow_extract(&packet, &headers);
 
+    VLOG_WARN("NUMAN : process_packet_in : ah->opcode = [%d]",
+               ntohl(ah->opcode));
     switch (ntohl(ah->opcode)) {
     case ACTION_OPCODE_ARP:
         pinctrl_handle_arp(&headers, &pin.flow_metadata, &userdata);
@@ -684,10 +704,13 @@ process_packet_in(const struct ofp_header *msg)
         break;
 
     case ACTION_OPCODE_PUT_DHCP_OPTS:
+        VLOG_WARN("NUMAN : process_packet_in : ACTION_OPCODE_PUT_DHCP_OPTS ");
         pinctrl_handle_put_dhcp_opts(&packet, &pin, &userdata, &continuation);
         break;
 
     case ACTION_OPCODE_PUT_DHCPV6_OPTS:
+        VLOG_WARN("NUMAN : process_packet_in : ACTION_OPCODE_PUT_DHCPV6_OPTS :"
+                  " calling pinctrl_handle_put_dhcpv6_opts ");
         pinctrl_handle_put_dhcpv6_opts(&packet, &pin, &userdata,
                                        &continuation);
         break;
