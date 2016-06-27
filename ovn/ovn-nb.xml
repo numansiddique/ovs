@@ -509,6 +509,12 @@
     </group>
 
     <group title="Common Columns">
+      <column name="dhcpv4_options">
+        This column defines the DHCPv4 Options to be included by the
+        <code>ovn-controller</code> when it replies to the DHCPv4 requests.
+        Please see the <ref table="DHCP_Options"/> table.
+      </column>
+
       <column name="external_ids">
         See <em>External IDs</em> at the beginning of this document.
       </column>
@@ -926,4 +932,268 @@
     </column>
   </table>
 
+  <table name="DHCP_Options" title="DHCP options.">
+    <p>
+      OVN implements a native DHCPv4 support which caters to the common
+      use case of providing an IPv4 address to a booting instance by
+      providing stateless replies to DHCPv4 requests based on statically
+      configured address mappings. To do this it allows a short list of
+      DHCPv4 options to be configured and applied at each compute host
+      running ovn-controller.
+    </p>
+
+    <column name="cidr">
+      <p>
+        The DHCPv4 options will be included if the logical port has the IPv4
+        address in this <ref column="cidr"/>.
+      </p>
+    </column>
+
+    <group title="DHCPv4 options">
+      <p>
+        CMS should define the set of DHCPv4 options as key/value pairs in the
+        <ref column="options"/> column of this table. In order for the
+        <code>ovn-controller</code> to include these DHCPv4 options, the
+        <ref column="dhcpv4_options"/> of <ref table="Logical_Switch_Port"/>
+        should refer to an entry in this table.
+      </p>
+
+      <group title="Supported v4 options">
+        <p>
+          Below are the supported DHCPv4 options whose values are IPv4 address
+          or addresses. If the value has more than one IPv4 address, then it
+          should be enclosed within '{}' braces. Please refer to the
+          RFC 2132 <code>"https://tools.ietf.org/html/rfc2132"</code> for
+          more details on the DHCPv4 options and their codes.
+        </p>
+
+        <column name="options" key="netmask">
+          <p>
+            The DHCPv4 option code for this option is 1.
+          </p>
+
+          <p>
+            Example. key="netmask", value="255.255.255.0"
+          </p>
+        </column>
+
+        <column name="options" key="router">
+          <p>
+            The DHCPv4 option code for this option is 3.
+          </p>
+        </column>
+
+        <column name="options" key="dns_server">
+          <p>
+            The DHCPv4 option code for this option is 6.
+          </p>
+        </column>
+
+        <column name="options" key="log_server">
+          <p>
+            The DHCPv4 option code for this option is 7.
+          </p>
+        </column>
+
+        <column name="options" key="lpr_server">
+          <p>
+            The DHCPv4 option code for this option is 9.
+          </p>
+        </column>
+
+        <column name="options" key="swap_server">
+          <p>
+            The DHCPv4 option code for this option is 16.
+          </p>
+        </column>
+
+        <column name="options" key="policy_filter">
+          <p>
+            The DHCPv4 option code for this option is 21.
+          </p>
+        </column>
+
+        <column name="options" key="router_solicitation">
+          <p>
+            The DHCPv4 option code for this option is 32.
+          </p>
+        </column>
+
+        <column name="options" key="nis_server">
+          <p>
+            The DHCPv4 option code for this option is 41.
+          </p>
+        </column>
+
+        <column name="options" key="ntp_server">
+          <p>
+            The DHCPv4 option code for this option is 42.
+          </p>
+        </column>
+
+        <column name="options" key="server_id">
+          <p>
+            The DHCPv4 option code for this option is 54.
+          </p>
+        </column>
+
+        <column name="options" key="tftp_server">
+          <p>
+            The DHCPv4 option code for this option is 66.
+          </p>
+        </column>
+
+        <column name="options" key="classless_static_route">
+          <p>
+            The DHCPv4 option code for this option is 121.
+          </p>
+
+          <p>
+             This option can contain one or more static routes, each of which
+             consists of a destination descriptor and the IP address of the
+             router that should be used to reach that destination. Please see
+             RFC 3442 for more details.
+          </p>
+
+          <p>
+            Example.
+            key="classless_static_route"
+            value="{30.0.0.0/24,10.0.0.10, 0.0.0.0/0,10.0.0.1}"
+          </p>
+        </column>
+
+        <column name="options" key="ms_classless_static_route">
+          <p>
+            The DHCPv4 option code for this option is 249. This option is
+            similar to <code>classless_static_route</code> supported by
+            Microsoft Windows DHCPv4 clients.
+          </p>
+        </column>
+
+        <column name="options" key="server_mac">
+          <p>
+            <code>eth.src</code> will be set to this value in the DHCPv4
+            response packet.
+          </p>
+        </column>
+      </group>
+
+      <group title="Other supported DHCPv4 options">
+        <column name="options" key="ip_forward_enable">
+          <p>
+            The DHCPv4 option code for this option is 19.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>bool</code>.
+
+            Example. key="ip_forward_enable", value="1"
+          </p>
+        </column>
+
+        <column name="options" key="router_discovery">
+          <p>
+            The DHCPv4 option code for this option is 31.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>bool</code>.
+          </p>
+        </column>
+
+        <column name="options" key="ethernet_encap">
+          <p>
+            The DHCPv4 option code for this option is 36.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>bool</code>.
+          </p>
+        </column>
+
+        <column name="options" key="default_ttl">
+          <p>
+            The DHCPv4 option code for this option is 23.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>uint8</code>.
+
+            Example. key="default_ttl", value="128".
+          </p>
+        </column>
+
+        <column name="options" key="tcp_ttl">
+          <p>
+            The DHCPv4 option code for this option is 37.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>uint8</code>.
+          </p>
+        </column>
+
+        <column name="options" key="mtu">
+          <p>
+            The DHCPv4 option code for this option is 26.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>uint16</code>.
+          </p>
+        </column>
+
+        <column name="options" key="lease_time">
+          <p>
+            The DHCPv4 option code for this option is 51.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>uint32</code>.
+
+            Example. key="lease_time", value="42000"
+          </p>
+        </column>
+
+        <column name="options" key="T1">
+          <p>
+            The DHCPv4 option code for this option is 58.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>uint32</code>.
+
+            Example. key="T1", value="30000"
+          </p>
+        </column>
+
+        <column name="options" key="T2">
+          <p>
+            The DHCPv4 option code for this option is 59.
+          </p>
+
+          <p>
+            The value of this DHCPv4 option is of type <code>uint32</code>.
+
+            Example. key="T2", value="40000"
+          </p>
+        </column>
+      </group>
+
+      <group title="Mandatory DHCPv4 options">
+        <p>
+          DHCPv4 options <code>"server_id"</code>, <code>"server_mac"</code>,
+          <code>"router"</code> and <code>"lease_time"</code> are mandatory
+          options which CMS should define for <code>OVN</code> to support
+          native DHCPv4.
+        </p>
+      </group>
+    </group>
+
+    <group title="Common Columns">
+      <column name="external_ids">
+        See <em>External IDs</em> at the beginning of this document.
+      </column>
+    </group>
+  </table>
 </database>
