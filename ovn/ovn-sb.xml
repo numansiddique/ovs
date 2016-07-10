@@ -1965,4 +1965,33 @@ tcp.flags = RST;
       </dl>
     </column>
   </table>
+
+  <table name="DHCPv6_Options" title="DHCPv6 Options supported by native OVN DHCPv6">
+    <p>
+      DHCPv6 options
+    </p>
+
+    <column name="name">
+      <p>
+        Name of the DHCP option.
+      </p>
+
+      <p>
+        Example. name="router"
+      </p>
+    </column>
+
+    <column name="code">
+      <p>
+        DHCP option code for the DHCP option as defined in the RFC 2132.
+      </p>
+
+      <p>
+        Example. code=3
+      </p>
+    </column>
+
+    <column name="type">
+    </column>
+  </table>  
 </database>

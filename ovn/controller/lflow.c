@@ -373,6 +373,12 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
                      dhcp_opt_row->type);
     }
 
+    const struct sbrec_dhcpv6_options *dhcpv6_opt_row;
+    SBREC_DHCPV6_OPTIONS_FOR_EACH(dhcpv6_opt_row, ctx->ovnsb_idl) {
+       dhcp_opt_add(&dhcp_opts, dhcpv6_opt_row->name, dhcpv6_opt_row->code,
+                    dhcpv6_opt_row->type);
+    }
+
     const struct sbrec_logical_flow *lflow;
     SBREC_LOGICAL_FLOW_FOR_EACH (lflow, ctx->ovnsb_idl) {
         consider_logical_flow(lports, mcgroups, lflow, local_datapaths,

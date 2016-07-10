@@ -1,7 +1,7 @@
 {
     "name": "OVN_Northbound",
-    "version": "3.3.0",
-    "cksum": "1364201762 8258",
+    "version": "3.3.1",
+    "cksum": "2927319216 8550",
     "tables": {
         "Logical_Switch": {
             "columns": {
@@ -49,6 +49,11 @@
                 "up": {"type": {"key": "boolean", "min": 0, "max": 1}},
                 "enabled": {"type": {"key": "boolean", "min": 0, "max": 1}},
                 "dhcpv4_options": {"type": {"key": {"type": "uuid",
+                                            "refTable": "DHCP_Options",
+                                            "refType": "weak"},
+                                 "min": 0,
+                                 "max": 1}},
+                "dhcpv6_options": {"type": {"key": {"type": "uuid",
                                             "refTable": "DHCP_Options",
                                             "refType": "weak"},
                                  "min": 0,

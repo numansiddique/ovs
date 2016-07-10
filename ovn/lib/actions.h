@@ -78,6 +78,15 @@ enum action_opcode {
      * The actions, in OpenFlow 1.3 format, follow the action_header.
      */
     ACTION_OPCODE_NA,
+
+    /* "result = put_dhcpv6_opts(option, ...)".
+     *
+     * Arguments follow the action_header, in this format:
+     *   - A 32-bit or 64-bit OXM header designating the result field.
+     *   - A 32-bit integer specifying a bit offset within the result field.
+     *   - Any number of DHCPv6 options.
+     */
+    ACTION_OPCODE_PUT_DHCPV6_OPTS,
 };
 
 /* Header. */
