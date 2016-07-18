@@ -692,16 +692,6 @@ ipv6_addr_bitand(const struct in6_addr *a, const struct in6_addr *b)
    return dst;
 }
 
-struct in6_addr
-ipv6_addr_bitxor(const struct in6_addr *a, const struct in6_addr *b)
-{
-   struct in6_addr dst;
-   IPV6_FOR_EACH (i) {
-       dst.s6_addrX[i] = a->s6_addrX[i] ^ b->s6_addrX[i];
-   }
-   return dst;
-}
-
 bool
 ipv6_is_zero(const struct in6_addr *a)
 {
@@ -711,6 +701,25 @@ ipv6_is_zero(const struct in6_addr *a)
        }
    }
    return true;
+}
+
+struct in6_addr ipv6_addr_bitxor(const struct in6_addr *a,
+                                 const struct in6_addr *b)
+{
+    int i;
+    struct in6_addr dst;
+
+#ifdef s6_addr32
+    for (i=0; i<4; i++) {
+        dst.s6_addr32[i] = a->s6_addr32[i] ^ b->s6_addr32[i];
+    }
+#else
+    for (i=0; i<16; i++) {
+        dst.s6_addr[i] = a->s6_addr[i] ^ b->s6_addr[i];
+    }
+#endif
+
+    return dst;
 }
 
 /* Returns an in6_addr consisting of 'mask' high-order 1-bits and 128-N

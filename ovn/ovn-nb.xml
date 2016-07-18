@@ -515,6 +515,12 @@
         Please see the <ref table="DHCP_Options"/> table.
       </column>
 
+      <column name="dhcpv6_options">
+        This column defines the DHCPv6 Options to be included by the
+        <code>ovn-controller</code> when it replies to the DHCPv6 requests.
+        Please see the <ref table="DHCP_Options"/> table.
+      </column>
+
       <column name="external_ids">
         See <em>External IDs</em> at the beginning of this document.
       </column>
@@ -941,11 +947,15 @@
       DHCPv4 options to be configured and applied at each compute host
       running ovn-controller.
     </p>
+    <p>
+      OVN also implements a native DHCPv6 support which provides stateless
+      replies to DHCPv6 requests.
+    </p>
 
     <column name="cidr">
       <p>
-        The DHCPv4 options will be included if the logical port has the IPv4
-        address in this <ref column="cidr"/>.
+        The DHCPv4/DHCPv6 options will be included if the logical port has the
+        IP address in this <ref column="cidr"/>.
       </p>
     </column>
 
@@ -1187,6 +1197,80 @@
           options which CMS should define for <code>OVN</code> to support
           native DHCPv4.
         </p>
+      </group>
+    </group>
+
+    <group title="DHCPv6 options">
+      <p>
+        OVN also implements native DHCPv6 support. CMS should define
+        the set of DHCPv6 options as key/value pairs. The define DHCPv6
+        options will be included in the DHCPv6 response to the DHCPv6
+        Solicit/Request/Confirm packet from the logical ports having the
+        IPv6 addresses in the <ref column="cidr"/>.
+      </p>
+
+      <group title="Supported DHCPv6 options">
+        <p>
+          Below are the supported DHCPv6 options. Please refer the RFC 3315
+          which describes the DHCPv6 protocol.
+        </p>
+
+        <column name="options" key="SERVER_ID">
+          <p>
+            The DHCPv6 option code for this option is 2. This option is used
+            to carry a DUID which identifies the Server.
+            <code>ovn-controller</code> defines DUID Based on
+            Link-layer Address [DUID-LL]
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type <code>MAC</code>.
+
+            Example. key="SERVER_ID", value="F0:00:00:00:00:01".
+          </p>
+        </column>
+
+        <column name="options" key="IA_ADDR">
+          <p>
+            The DHCPv6 option code for this option is 5. This option is used to
+            specify the offered IPv6 address to the client.
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type <code>IPv6 address</code>.
+
+            Example. key="SERVER_ID", value="aef0::23:04".
+          </p>
+        </column>
+
+        <column name="options" key="DNS_RECURSIVE_SERVER">
+          <p>
+            The DHCPv6 option code for this option is 23. This option is used
+            to specify the DNS servers.
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type
+            <code>IPv6 address(es)</code>.
+
+            Example. key="DNS_RECURSIVE_SERVER",
+            value="{aef0::23:01, aef0::23:02}".
+          </p>
+        </column>
+
+        <column name="options" key="DOMAIN_SEARCH_LIST">
+          <p>
+            The DHCPv6 option code for this option is 24. This option is used
+            to specify the domain search list the client can use when resolving
+            hostnames with DNS.
+          </p>
+
+          <p>
+            The value of this DHCPv6 option is of type <code>string</code>.
+
+            Example. key="DOMAIN_SEARCH_LIST", value="ovn.org".
+          </p>
+        </column>
       </group>
     </group>
 
