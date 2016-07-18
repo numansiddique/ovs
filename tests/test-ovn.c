@@ -269,6 +269,12 @@ create_dhcp_opts(struct hmap *dhcp_opts)
     dhcp_opt_add(dhcp_opts, "tcp_ttl", 37, "uint8");
     dhcp_opt_add(dhcp_opts, "mtu", 26, "uint16");
     dhcp_opt_add(dhcp_opts, "lease_time",  51, "uint32");
+
+    /* DHCPv6 options. */
+    dhcp_opt_add(dhcp_opts, "SERVER_ID",  2, "mac");
+    dhcp_opt_add(dhcp_opts, "IA_ADDR",  5, "ipv6");
+    dhcp_opt_add(dhcp_opts, "DNS_RECURSIVE_SERVER",  23, "ipv6");
+    dhcp_opt_add(dhcp_opts, "DOMAIN_SEARCH_LIST",  24, "str");
 }
 
 static void

@@ -652,6 +652,17 @@ reg1[0] = put_dhcp_opts(offerip=1.2.3.4, xyzzy); => Syntax error at `xyzzy' expe
 reg1[0] = put_dhcp_opts(offerip="xyzzy"); => DHCP option offerip requires numeric value.
 reg1[0] = put_dhcp_opts(offerip=1.2.3.4, domain=1.2.3.4); => DHCP option domain requires string value.
 
+# put_dhcpv6_opts
+reg1[0] = put_dhcpv6_opts(IA_ADDR = ae70::4, SERVER_ID = 00:00:00:00:10:02); => actions=controller(userdata=00.00.00.04.00.00.00.00.80.01.00.08.00.00.00.00.05.00.10.00.ae.70.00.00.00.00.00.00.00.00.00.00.00.00.00.04.02.00.06.00.00.00.00.00.10.02,pause), prereqs=1
+reg1[0] = put_dhcpv6_opts(); => actions=controller(userdata=00.00.00.04.00.00.00.00.80.01.00.08.00.00.00.00,pause), prereqs=1
+reg1[0] = put_dhcpv6_opts(DNS_RECURSIVE_SERVER={ae70::1,ae70::2}); => actions=controller(userdata=00.00.00.04.00.00.00.00.80.01.00.08.00.00.00.00.17.00.20.00.ae.70.00.00.00.00.00.00.00.00.00.00.00.00.00.01.ae.70.00.00.00.00.00.00.00.00.00.00.00.00.00.02,pause), prereqs=1
+reg1[0] = put_dhcpv6_opts(DOMAIN_SEARCH_LIST="ovn.org"); => actions=controller(userdata=00.00.00.04.00.00.00.00.80.01.00.08.00.00.00.00.18.00.07.00.6f.76.6e.2e.6f.72.67,pause), prereqs=1
+reg1[0] = put_dhcpv6_opts(x = 1.2.3.4); => Syntax error at `x' expecting DHCPv6 option name.
+reg1[0] = put_dhcpv6_opts(IA_ADDR=ae70::4, "hi"); => Syntax error at `"hi"'.
+reg1[0] = put_dhcpv6_opts(IA_ADDR=ae70::4, xyzzy); => Syntax error at `xyzzy' expecting DHCPv6 option name.
+reg1[0] = put_dhcpv6_opts(IA_ADDR="ae70::4"); => DHCPv6 option IA_ADDR requires numeric value.
+reg1[0] = put_dhcpv6_opts(IA_ADDR=ae70::4, DOMAIN_SEARCH_LIST=ae70::1); => DHCPv6 option DOMAIN_SEARCH_LIST requires string value.
+
 # na
 na { eth.src = 12:34:56:78:9a:bc; nd.tll = 12:34:56:78:9a:bc; outport = inport; inport = ""; /* Allow sending out inport. */ output; }; => actions=controller(userdata=00.00.00.03.00.00.00.00.00.19.00.10.80.00.08.06.12.34.56.78.9a.bc.00.00.00.19.00.10.80.00.42.06.12.34.56.78.9a.bc.00.00.ff.ff.00.18.00.00.23.20.00.06.00.20.00.00.00.00.00.01.1c.04.00.01.1e.04.00.19.00.10.00.01.1c.04.00.00.00.00.00.00.00.00.00.19.00.10.00.00.00.02.00.00.00.00.00.00.00.00.ff.ff.00.10.00.00.23.20.00.0e.ff.f8.40.00.00.00), prereqs=nd
 
