@@ -25,6 +25,7 @@
 #include "lport.h"
 #include "nx-match.h"
 #include "ovn-controller.h"
+#include "latch.h"
 #include "lib/packets.h"
 #include "lib/sset.h"
 #include "openvswitch/ofp-actions.h"
@@ -77,14 +78,24 @@ static void reload_metadata(struct ofpbuf *ofpacts,
                             const struct match *md);
 
 COVERAGE_DEFINE(pinctrl_drop_put_mac_binding);
+static void *pinctrl_handler(void *arg);
 
+struct pinctrl {
+    char *br_int_name;
+    const struct ovsrec_bridge *br_int;
+    pthread_t pinctrl_thread;
+    /* Latch to destroy the 'pinctrl_thread' */
+    struct latch pinctrl_thread_exit;
+};
+
+static struct pinctrl pinctrl;
 void
 pinctrl_init(void)
 {
-    swconn = rconn_create(5, 0, DSCP_DEFAULT, 1 << OFP13_VERSION);
-    conn_seq_no = 0;
-    init_put_mac_bindings();
-    init_send_garps();
+    pinctrl.br_int_name = NULL;
+    latch_init(&pinctrl.pinctrl_thread_exit);
+    pinctrl.pinctrl_thread = ovs_thread_create("ovn_pinctrl", pinctrl_handler,
+                                                &pinctrl);
 }
 
 static ovs_be32
@@ -455,48 +466,92 @@ pinctrl_recv(const struct ofp_header *oh, enum ofptype type)
     }
 }
 
+static void *
+pinctrl_handler(void *arg_)
+{
+    struct pinctrl *pctrl = arg_;
+
+    swconn = rconn_create(5, 0, DSCP_DEFAULT, 1 << OFP13_VERSION);
+    conn_seq_no = 0;
+    init_put_mac_bindings();
+    init_send_garps();
+    char *br_int_name = NULL;
+
+    while (!latch_is_set(&pctrl->pinctrl_thread_exit)) {
+        if (pctrl->br_int_name) {
+            if (!br_int_name || strcmp(br_int_name, pctrl->br_int_name)) {
+                if (br_int_name) {
+                    free(br_int_name);
+                }
+                br_int_name = xstrdup(pctrl->br_int_name);
+            }
+        }
+
+        if (br_int_name) {
+            char *target;
+
+            target = xasprintf("unix:%s/%s.mgmt", ovs_rundir(), br_int_name);
+            if (strcmp(target, rconn_get_target(swconn))) {
+                VLOG_INFO("%s: connecting to switch", target);
+                rconn_connect(swconn, target, target);
+            }
+            free(target);
+        } else {
+            rconn_disconnect(swconn);
+        }
+
+        rconn_run(swconn);
+
+        if (rconn_is_connected(swconn)) {
+            if (conn_seq_no != rconn_get_connection_seqno(swconn)) {
+                pinctrl_setup(swconn);
+                conn_seq_no = rconn_get_connection_seqno(swconn);
+                flush_put_mac_bindings();
+            }
+
+            /* Process a limited number of messages per call. */
+            for (int i = 0; i < 50; i++) {
+                struct ofpbuf *msg = rconn_recv(swconn);
+                if (!msg) {
+                    break;
+                }
+
+                const struct ofp_header *oh = msg->data;
+                enum ofptype type;
+
+                ofptype_decode(&type, oh);
+                pinctrl_recv(oh, type);
+                ofpbuf_delete(msg);
+            }
+        }
+
+        rconn_run_wait(swconn);
+        rconn_recv_wait(swconn);
+        latch_wait(&pctrl->pinctrl_thread_exit);
+        if (rconn_is_connected(swconn)) {
+            poll_block();
+        }
+    }
+
+    if (br_int_name) {
+        free(br_int_name);
+    }
+    rconn_destroy(swconn);
+    return NULL;
+}
+
 void
 pinctrl_run(struct controller_ctx *ctx, const struct lport_index *lports,
             const struct ovsrec_bridge *br_int,
             const char *chassis_id,
             struct hmap *local_datapaths)
 {
-    if (br_int) {
-        char *target;
-
-        target = xasprintf("unix:%s/%s.mgmt", ovs_rundir(), br_int->name);
-        if (strcmp(target, rconn_get_target(swconn))) {
-            VLOG_INFO("%s: connecting to switch", target);
-            rconn_connect(swconn, target, target);
+    if (br_int && (!pinctrl.br_int_name || strcmp(pinctrl.br_int_name,
+                                                  br_int->name))) {
+        if (pinctrl.br_int_name) {
+            free(pinctrl.br_int_name);
         }
-        free(target);
-    } else {
-        rconn_disconnect(swconn);
-    }
-
-    rconn_run(swconn);
-
-    if (rconn_is_connected(swconn)) {
-        if (conn_seq_no != rconn_get_connection_seqno(swconn)) {
-            pinctrl_setup(swconn);
-            conn_seq_no = rconn_get_connection_seqno(swconn);
-            flush_put_mac_bindings();
-        }
-
-        /* Process a limited number of messages per call. */
-        for (int i = 0; i < 50; i++) {
-            struct ofpbuf *msg = rconn_recv(swconn);
-            if (!msg) {
-                break;
-            }
-
-            const struct ofp_header *oh = msg->data;
-            enum ofptype type;
-
-            ofptype_decode(&type, oh);
-            pinctrl_recv(oh, type);
-            ofpbuf_delete(msg);
-        }
+        pinctrl.br_int_name = xstrdup(br_int->name);
     }
 
     run_put_mac_bindings(ctx, lports);
@@ -507,18 +562,19 @@ void
 pinctrl_wait(struct controller_ctx *ctx)
 {
     wait_put_mac_bindings(ctx);
-    rconn_run_wait(swconn);
-    rconn_recv_wait(swconn);
     send_garp_wait();
 }
 
 void
 pinctrl_destroy(void)
 {
-    rconn_destroy(swconn);
+    latch_set(&pinctrl.pinctrl_thread_exit);
+    pthread_join(pinctrl.pinctrl_thread, NULL);
+    latch_destroy(&pinctrl.pinctrl_thread_exit);
     destroy_put_mac_bindings();
     destroy_send_garps();
 }
+
 
 /* Implementation of the "put_arp" and "put_nd" OVN actions.  These
  * actions send a packet to ovn-controller, using the flow as an API
