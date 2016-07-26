@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 Nicira, Inc.
+ * Copyright (c) 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,24 +15,26 @@
  */
 
 #include <config.h>
-#include "command-line.h"
 #include <errno.h>
 #include <getopt.h>
 #include <sys/wait.h>
-#include "dynamic-string.h"
+#include "command-line.h"
 #include "fatal-signal.h"
-#include "match.h"
-#include "ofp-actions.h"
-#include "ofpbuf.h"
+#include "flow.h"
+#include "openvswitch/dynamic-string.h"
+#include "openvswitch/match.h"
+#include "openvswitch/ofp-actions.h"
+#include "openvswitch/ofpbuf.h"
+#include "openvswitch/vlog.h"
 #include "ovn/lib/actions.h"
 #include "ovn/lib/expr.h"
 #include "ovn/lib/lex.h"
+#include "ovn/lib/ovn-dhcp.h"
 #include "ovs-thread.h"
 #include "ovstest.h"
-#include "shash.h"
+#include "openvswitch/shash.h"
 #include "simap.h"
 #include "util.h"
-#include "openvswitch/vlog.h"
 
 /* --relops: Bitmap of the relational operators to test, in exhaustive test. */
 static unsigned int test_relops;
@@ -141,8 +143,11 @@ create_symtab(struct shash *symtab)
     /* Reserve a pair of registers for the logical inport and outport.  A full
      * 32-bit register each is bigger than we need, but the expression code
      * doesn't yet support string fields that occupy less than a full OXM. */
-    expr_symtab_add_string(symtab, "inport", MFF_REG6, NULL);
-    expr_symtab_add_string(symtab, "outport", MFF_REG7, NULL);
+    expr_symtab_add_string(symtab, "inport", MFF_REG14, NULL);
+    expr_symtab_add_string(symtab, "outport", MFF_REG15, NULL);
+
+    expr_symtab_add_field(symtab, "xxreg0", MFF_XXREG0, NULL, false);
+    expr_symtab_add_field(symtab, "xxreg1", MFF_XXREG1, NULL, false);
 
     expr_symtab_add_field(symtab, "xreg0", MFF_XREG0, NULL, false);
     expr_symtab_add_field(symtab, "xreg1", MFF_XREG1, NULL, false);
@@ -239,13 +244,81 @@ create_symtab(struct shash *symtab)
 }
 
 static void
+create_dhcp_opts(struct hmap *dhcp_opts)
+{
+    hmap_init(dhcp_opts);
+    dhcp_opt_add(dhcp_opts, "offerip", 0, "ipv4");
+    dhcp_opt_add(dhcp_opts, "netmask", 1, "ipv4");
+    dhcp_opt_add(dhcp_opts, "router",  3, "ipv4");
+    dhcp_opt_add(dhcp_opts, "dns_server", 6, "ipv4");
+    dhcp_opt_add(dhcp_opts, "log_server", 7, "ipv4");
+    dhcp_opt_add(dhcp_opts, "lpr_server",  9, "ipv4");
+    dhcp_opt_add(dhcp_opts, "domain", 15, "str");
+    dhcp_opt_add(dhcp_opts, "swap_server", 16, "ipv4");
+    dhcp_opt_add(dhcp_opts, "policy_filter", 21, "ipv4");
+    dhcp_opt_add(dhcp_opts, "router_solicitation",  32, "ipv4");
+    dhcp_opt_add(dhcp_opts, "nis_server", 41, "ipv4");
+    dhcp_opt_add(dhcp_opts, "ntp_server", 42, "ipv4");
+    dhcp_opt_add(dhcp_opts, "server_id",  54, "ipv4");
+    dhcp_opt_add(dhcp_opts, "tftp_server", 66, "ipv4");
+    dhcp_opt_add(dhcp_opts, "classless_static_route", 121, "static_routes");
+    dhcp_opt_add(dhcp_opts, "ip_forward_enable",  19, "bool");
+    dhcp_opt_add(dhcp_opts, "router_discovery", 31, "bool");
+    dhcp_opt_add(dhcp_opts, "ethernet_encap", 36, "bool");
+    dhcp_opt_add(dhcp_opts, "default_ttl",  23, "uint8");
+    dhcp_opt_add(dhcp_opts, "tcp_ttl", 37, "uint8");
+    dhcp_opt_add(dhcp_opts, "mtu", 26, "uint16");
+    dhcp_opt_add(dhcp_opts, "lease_time",  51, "uint32");
+
+    /* DHCPv6 options. */
+    dhcp_opt_add(dhcp_opts, "SERVER_ID",  2, "mac");
+    dhcp_opt_add(dhcp_opts, "IA_ADDR",  5, "ipv6");
+    dhcp_opt_add(dhcp_opts, "DNS_RECURSIVE_SERVER",  23, "ipv6");
+    dhcp_opt_add(dhcp_opts, "DOMAIN_SEARCH_LIST",  24, "str");
+}
+
+static void
+create_macros(struct shash *macros)
+{
+    shash_init(macros);
+
+    static const char *const addrs1[] = {
+        "10.0.0.1", "10.0.0.2", "10.0.0.3",
+    };
+    static const char *const addrs2[] = {
+        "::1", "::2", "::3",
+    };
+    static const char *const addrs3[] = {
+        "00:00:00:00:00:01", "00:00:00:00:00:02", "00:00:00:00:00:03",
+    };
+
+    expr_macros_add(macros, "set1", addrs1, 3);
+    expr_macros_add(macros, "set2", addrs2, 3);
+    expr_macros_add(macros, "set3", addrs3, 3);
+}
+
+static bool
+lookup_port_cb(const void *ports_, const char *port_name, unsigned int *portp)
+{
+    const struct simap *ports = ports_;
+    const struct simap_node *node = simap_find(ports, port_name);
+    if (!node) {
+        return false;
+    }
+    *portp = node->data;
+    return true;
+}
+
+static void
 test_parse_expr__(int steps)
 {
     struct shash symtab;
+    struct shash macros;
     struct simap ports;
     struct ds input;
 
     create_symtab(&symtab);
+    create_macros(&macros);
 
     simap_init(&ports);
     simap_put(&ports, "eth0", 5);
@@ -257,7 +330,7 @@ test_parse_expr__(int steps)
         struct expr *expr;
         char *error;
 
-        expr = expr_parse_string(ds_cstr(&input), &symtab, &error);
+        expr = expr_parse_string(ds_cstr(&input), &symtab, &macros, &error);
         if (!error && steps > 0) {
             expr = expr_annotate(expr, &symtab, &error);
         }
@@ -274,7 +347,7 @@ test_parse_expr__(int steps)
             if (steps > 3) {
                 struct hmap matches;
 
-                expr_to_matches(expr, &ports, &matches);
+                expr_to_matches(expr, lookup_port_cb, &ports, &matches);
                 expr_matches_print(&matches, stdout);
                 expr_matches_destroy(&matches);
             } else {
@@ -294,6 +367,8 @@ test_parse_expr__(int steps)
     simap_destroy(&ports);
     expr_symtab_destroy(&symtab);
     shash_destroy(&symtab);
+    expr_macros_destroy(&macros);
+    shash_destroy(&macros);
 }
 
 static void
@@ -438,7 +513,7 @@ test_evaluate_expr(struct ovs_cmdl_context *ctx)
         struct expr *expr;
         char *error;
 
-        expr = expr_parse_string(ds_cstr(&input), &symtab, &error);
+        expr = expr_parse_string(ds_cstr(&input), &symtab, NULL, &error);
         if (!error) {
             expr = expr_annotate(expr, &symtab, &error);
         }
@@ -829,7 +904,7 @@ build_simple_tree(enum expr_type type, int n, struct expr ***terminalp)
         struct expr *e = expr_create_andor(type);
         for (int i = 0; i < 2; i++) {
             struct expr *sub = make_terminal(terminalp);
-            list_push_back(&e->andor, &sub->node);
+            ovs_list_push_back(&e->andor, &sub->node);
         }
         return e;
     } else if (n == 1) {
@@ -852,7 +927,7 @@ build_tree_shape(enum expr_type type, const struct tree_shape **tsp,
         struct expr *sub = (ts->s[i] > 2
                             ? build_tree_shape(t, tsp, terminalp)
                             : build_simple_tree(t, ts->s[i], terminalp));
-        list_push_back(&e->andor, &sub->node);
+        ovs_list_push_back(&e->andor, &sub->node);
     }
     return e;
 }
@@ -912,7 +987,7 @@ test_tree_shape_exhaustively(struct expr *expr, struct shash *symtab,
             expr_format(expr, &s);
 
             char *error;
-            modified = expr_parse_string(ds_cstr(&s), symtab, &error);
+            modified = expr_parse_string(ds_cstr(&s), symtab, NULL, &error);
             if (error) {
                 fprintf(stderr, "%s fails to parse (%s)\n",
                         ds_cstr(&s), error);
@@ -934,7 +1009,7 @@ test_tree_shape_exhaustively(struct expr *expr, struct shash *symtab,
             struct expr_match *m;
             struct test_rule *test_rule;
 
-            expr_to_matches(modified, &string_map, &matches);
+            expr_to_matches(modified, lookup_port_cb, &string_map, &matches);
 
             classifier_init(&cls, NULL);
             HMAP_FOR_EACH (m, hmap_node, &matches) {
@@ -1208,10 +1283,19 @@ static void
 test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
 {
     struct shash symtab;
+    struct hmap dhcp_opts;
     struct simap ports, ct_zones;
     struct ds input;
 
     create_symtab(&symtab);
+    create_dhcp_opts(&dhcp_opts);
+
+    /* Initialize group ids. */
+    struct group_table group_table;
+    group_table.group_ids = bitmap_allocate(MAX_OVN_GROUPS);
+    bitmap_set1(group_table.group_ids, 0); /* Group id 0 is invalid. */
+    hmap_init(&group_table.desired_groups);
+    hmap_init(&group_table.existing_groups);
 
     simap_init(&ports);
     simap_put(&ports, "eth0", 5);
@@ -1226,9 +1310,22 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
         char *error;
 
         ofpbuf_init(&ofpacts, 0);
-        error = actions_parse_string(ds_cstr(&input), &symtab, &ports,
-                                     &ct_zones, 16, 16, 10, 64,
-                                     &ofpacts, &prereqs);
+
+        struct action_params ap = {
+            .symtab = &symtab,
+            .dhcp_opts = &dhcp_opts,
+            .lookup_port = lookup_port_cb,
+            .aux = &ports,
+            .ct_zones = &ct_zones,
+            .group_table = &group_table,
+
+            .n_tables = 16,
+            .first_ptable = 16,
+            .cur_ltable = 10,
+            .output_ptable = 64,
+            .arp_ptable = 65,
+        };
+        error = actions_parse_string(ds_cstr(&input), &ap, &ofpacts, &prereqs);
         if (!error) {
             struct ds output;
 
@@ -1330,6 +1427,10 @@ exhaustive N\n\
                          comma separated.  Default is all operators.\n\
    String vars:\n\
     --svars=N  Number of string vars to test, in range 0...4, default 2.\n\
+\n\
+parse-actions\n\
+  Parses OVN actions from stdin and prints the equivalent OpenFlow actions\n\
+  on stdout.\n\
 ",
            program_name, program_name);
     exit(EXIT_SUCCESS);

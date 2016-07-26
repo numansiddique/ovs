@@ -18,13 +18,13 @@
 #undef NDEBUG
 #include "odp-util.h"
 #include <stdio.h>
-#include "dynamic-string.h"
+#include "openvswitch/dynamic-string.h"
 #include "flow.h"
-#include "match.h"
-#include "ofp-parse.h"
-#include "ofpbuf.h"
+#include "openvswitch/match.h"
+#include "openvswitch/ofpbuf.h"
 #include "ovstest.h"
 #include "util.h"
+#include "openvswitch/ofp-parse.h"
 #include "openvswitch/vlog.h"
 
 static int
@@ -86,7 +86,6 @@ parse_keys(bool wc_keys)
             /* Convert cls_rule back to odp_key. */
             ofpbuf_uninit(&odp_key);
             ofpbuf_init(&odp_key, 0);
-            odp_parms.odp_in_port = flow.in_port.odp_port;
             odp_flow_key_from_flow(&odp_parms, &odp_key);
 
             if (odp_key.size > ODPUTIL_FLOW_KEY_BYTES) {
@@ -109,6 +108,7 @@ parse_keys(bool wc_keys)
 
     next:
         ofpbuf_uninit(&odp_key);
+        ofpbuf_uninit(&odp_mask);
     }
     ds_destroy(&in);
 
@@ -197,7 +197,7 @@ parse_filter(char *filter_parse)
 
             odp_flow_key_to_flow(odp_key.data, odp_key.size, &flow);
             odp_flow_key_to_mask(odp_mask.data, odp_mask.size, odp_key.data,
-                                 odp_key.size, &wc.masks, &flow);
+                                 odp_key.size, &wc, &flow);
             match_init(&match, &flow, &wc);
 
             match_init(&match_filter, &flow_filter, &wc);

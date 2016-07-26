@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+ * Copyright (c) 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 #include <config.h>
 
-#include "meta-flow.h"
+#include "openvswitch/meta-flow.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -24,18 +24,18 @@
 #include <netinet/ip6.h>
 
 #include "classifier.h"
-#include "dynamic-string.h"
+#include "openvswitch/dynamic-string.h"
 #include "nx-match.h"
-#include "ofp-errors.h"
-#include "ofp-util.h"
+#include "openvswitch/ofp-util.h"
 #include "ovs-thread.h"
 #include "packets.h"
 #include "random.h"
-#include "shash.h"
+#include "openvswitch/shash.h"
 #include "socket-util.h"
 #include "tun-metadata.h"
 #include "unaligned.h"
 #include "util.h"
+#include "openvswitch/ofp-errors.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(meta_flow);
@@ -171,6 +171,13 @@ mf_subvalue_shift(union mf_subvalue *value, int n)
     }
 }
 
+/* Appends a formatted representation of 'sv' to 's'. */
+void
+mf_subvalue_format(const union mf_subvalue *sv, struct ds *s)
+{
+    ds_put_hex(s, sv, sizeof *sv);
+}
+
 /* Returns true if 'wc' wildcards all the bits in field 'mf', false if 'wc'
  * specifies at least one bit in the field.
  *
@@ -190,6 +197,10 @@ mf_is_all_wild(const struct mf_field *mf, const struct flow_wildcards *wc)
         return !wc->masks.tunnel.ip_src;
     case MFF_TUN_DST:
         return !wc->masks.tunnel.ip_dst;
+    case MFF_TUN_IPV6_SRC:
+        return ipv6_mask_is_any(&wc->masks.tunnel.ipv6_src);
+    case MFF_TUN_IPV6_DST:
+        return ipv6_mask_is_any(&wc->masks.tunnel.ipv6_dst);
     case MFF_TUN_ID:
         return !wc->masks.tunnel.tun_id;
     case MFF_TUN_TOS:
@@ -221,11 +232,15 @@ mf_is_all_wild(const struct mf_field *mf, const struct flow_wildcards *wc)
     case MFF_CT_MARK:
         return !wc->masks.ct_mark;
     case MFF_CT_LABEL:
-        return ovs_u128_is_zero(&wc->masks.ct_label);
+        return ovs_u128_is_zero(wc->masks.ct_label);
     CASE_MFF_REGS:
         return !wc->masks.regs[mf->id - MFF_REG0];
     CASE_MFF_XREGS:
         return !flow_get_xreg(&wc->masks, mf->id - MFF_XREG0);
+    CASE_MFF_XXREGS: {
+        ovs_u128 value = flow_get_xxreg(&wc->masks, mf->id - MFF_XXREG0);
+        return ovs_u128_is_zero(value);
+    }
     case MFF_ACTSET_OUTPUT:
         return !wc->masks.actset_output;
 
@@ -260,6 +275,8 @@ mf_is_all_wild(const struct mf_field *mf, const struct flow_wildcards *wc)
         return !(wc->masks.mpls_lse[0] & htonl(MPLS_TC_MASK));
     case MFF_MPLS_BOS:
         return !(wc->masks.mpls_lse[0] & htonl(MPLS_BOS_MASK));
+    case MFF_MPLS_TTL:
+        return !(wc->masks.mpls_lse[0] & htonl(MPLS_TTL_MASK));
 
     case MFF_IPV4_SRC:
         return !wc->masks.nw_src;
@@ -380,23 +397,16 @@ mf_are_prereqs_ok(const struct mf_field *mf, const struct flow *flow)
         return is_ip_any(flow) && flow->nw_proto == IPPROTO_SCTP
             && !(flow->nw_frag & FLOW_NW_FRAG_LATER);
     case MFP_ICMPV4:
-        return is_icmpv4(flow);
+        return is_icmpv4(flow, NULL);
     case MFP_ICMPV6:
-        return is_icmpv6(flow);
+        return is_icmpv6(flow, NULL);
 
     case MFP_ND:
-        return (is_icmpv6(flow)
-                && flow->tp_dst == htons(0)
-                && (flow->tp_src == htons(ND_NEIGHBOR_SOLICIT) ||
-                    flow->tp_src == htons(ND_NEIGHBOR_ADVERT)));
+        return is_nd(flow, NULL);
     case MFP_ND_SOLICIT:
-        return (is_icmpv6(flow)
-                && flow->tp_dst == htons(0)
-                && (flow->tp_src == htons(ND_NEIGHBOR_SOLICIT)));
+        return is_nd(flow, NULL) && flow->tp_src == htons(ND_NEIGHBOR_SOLICIT);
     case MFP_ND_ADVERT:
-        return (is_icmpv6(flow)
-                && flow->tp_dst == htons(0)
-                && (flow->tp_src == htons(ND_NEIGHBOR_ADVERT)));
+        return is_nd(flow, NULL) && flow->tp_src == htons(ND_NEIGHBOR_ADVERT);
     }
 
     OVS_NOT_REACHED();
@@ -408,7 +418,15 @@ mf_are_prereqs_ok(const struct mf_field *mf, const struct flow *flow)
 void
 mf_mask_field_and_prereqs(const struct mf_field *mf, struct flow_wildcards *wc)
 {
-    mf_set_flow_value(mf, &exact_match_mask, &wc->masks);
+    mf_mask_field_and_prereqs__(mf, &exact_match_mask, wc);
+}
+
+void
+mf_mask_field_and_prereqs__(const struct mf_field *mf,
+                            const union mf_value *mask,
+                            struct flow_wildcards *wc)
+{
+    mf_set_flow_value_masked(mf, &exact_match_mask, mask, &wc->masks);
 
     switch (mf->prereqs) {
     case MFP_ND:
@@ -496,6 +514,8 @@ mf_is_value_valid(const struct mf_field *mf, const union mf_value *value)
     case MFF_TUN_ID:
     case MFF_TUN_SRC:
     case MFF_TUN_DST:
+    case MFF_TUN_IPV6_SRC:
+    case MFF_TUN_IPV6_DST:
     case MFF_TUN_TOS:
     case MFF_TUN_TTL:
     case MFF_TUN_GBP_ID:
@@ -510,10 +530,12 @@ mf_is_value_valid(const struct mf_field *mf, const union mf_value *value)
     case MFF_CT_LABEL:
     CASE_MFF_REGS:
     CASE_MFF_XREGS:
+    CASE_MFF_XXREGS:
     case MFF_ETH_SRC:
     case MFF_ETH_DST:
     case MFF_ETH_TYPE:
     case MFF_VLAN_TCI:
+    case MFF_MPLS_TTL:
     case MFF_IPV4_SRC:
     case MFF_IPV4_DST:
     case MFF_IPV6_SRC:
@@ -617,6 +639,12 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
     case MFF_TUN_DST:
         value->be32 = flow->tunnel.ip_dst;
         break;
+    case MFF_TUN_IPV6_SRC:
+        value->ipv6 = flow->tunnel.ipv6_src;
+        break;
+    case MFF_TUN_IPV6_DST:
+        value->ipv6 = flow->tunnel.ipv6_dst;
+        break;
     case MFF_TUN_FLAGS:
         value->be16 = htons(flow->tunnel.flags & FLOW_TNL_PUB_F_MASK);
         break;
@@ -671,7 +699,7 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
         break;
 
     case MFF_CT_LABEL:
-        hton128(&flow->ct_label, &value->be128);
+        value->be128 = hton128(flow->ct_label);
         break;
 
     CASE_MFF_REGS:
@@ -680,6 +708,10 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
 
     CASE_MFF_XREGS:
         value->be64 = htonll(flow_get_xreg(flow, mf->id - MFF_XREG0));
+        break;
+
+    CASE_MFF_XXREGS:
+        value->be128 = hton128(flow_get_xxreg(flow, mf->id - MFF_XXREG0));
         break;
 
     case MFF_ETH_SRC:
@@ -720,6 +752,10 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
 
     case MFF_MPLS_BOS:
         value->u8 = mpls_lse_to_bos(flow->mpls_lse[0]);
+        break;
+
+    case MFF_MPLS_TTL:
+        value->u8 = mpls_lse_to_ttl(flow->mpls_lse[0]);
         break;
 
     case MFF_IPV4_SRC:
@@ -858,6 +894,12 @@ mf_set_value(const struct mf_field *mf,
     case MFF_TUN_DST:
         match_set_tun_dst(match, value->be32);
         break;
+    case MFF_TUN_IPV6_SRC:
+        match_set_tun_ipv6_src(match, &value->ipv6);
+        break;
+    case MFF_TUN_IPV6_DST:
+        match_set_tun_ipv6_dst(match, &value->ipv6);
+        break;
     case MFF_TUN_FLAGS:
         match_set_tun_flags(match, ntohs(value->be16));
         break;
@@ -918,13 +960,9 @@ mf_set_value(const struct mf_field *mf,
         match_set_ct_mark(match, ntohl(value->be32));
         break;
 
-    case MFF_CT_LABEL: {
-        ovs_u128 label;
-
-        ntoh128(&value->be128, &label);
-        match_set_ct_label(match, label);
+    case MFF_CT_LABEL:
+        match_set_ct_label(match, ntoh128(value->be128));
         break;
-    }
 
     CASE_MFF_REGS:
         match_set_reg(match, mf->id - MFF_REG0, ntohl(value->be32));
@@ -932,6 +970,10 @@ mf_set_value(const struct mf_field *mf,
 
     CASE_MFF_XREGS:
         match_set_xreg(match, mf->id - MFF_XREG0, ntohll(value->be64));
+        break;
+
+    CASE_MFF_XXREGS:
+        match_set_xxreg(match, mf->id - MFF_XXREG0, ntoh128(value->be128));
         break;
 
     case MFF_ETH_SRC:
@@ -972,6 +1014,10 @@ mf_set_value(const struct mf_field *mf,
 
     case MFF_MPLS_BOS:
         match_set_mpls_bos(match, 0, value->u8);
+        break;
+
+    case MFF_MPLS_TTL:
+        match_set_mpls_ttl(match, 0, value->u8);
         break;
 
     case MFF_IPV4_SRC:
@@ -1168,6 +1214,12 @@ mf_set_flow_value(const struct mf_field *mf,
     case MFF_TUN_DST:
         flow->tunnel.ip_dst = value->be32;
         break;
+    case MFF_TUN_IPV6_SRC:
+        flow->tunnel.ipv6_src = value->ipv6;
+        break;
+    case MFF_TUN_IPV6_DST:
+        flow->tunnel.ipv6_dst = value->ipv6;
+        break;
     case MFF_TUN_FLAGS:
         flow->tunnel.flags = (flow->tunnel.flags & ~FLOW_TNL_PUB_F_MASK) |
                              ntohs(value->be16);
@@ -1223,7 +1275,7 @@ mf_set_flow_value(const struct mf_field *mf,
         break;
 
     case MFF_CT_LABEL:
-        ntoh128(&value->be128, &flow->ct_label);
+        flow->ct_label = ntoh128(value->be128);
         break;
 
     CASE_MFF_REGS:
@@ -1232,6 +1284,10 @@ mf_set_flow_value(const struct mf_field *mf,
 
     CASE_MFF_XREGS:
         flow_set_xreg(flow, mf->id - MFF_XREG0, ntohll(value->be64));
+        break;
+
+    CASE_MFF_XXREGS:
+        flow_set_xxreg(flow, mf->id - MFF_XXREG0, ntoh128(value->be128));
         break;
 
     case MFF_ETH_SRC:
@@ -1272,6 +1328,10 @@ mf_set_flow_value(const struct mf_field *mf,
 
     case MFF_MPLS_BOS:
         flow_set_mpls_bos(flow, 0, value->u8);
+        break;
+
+    case MFF_MPLS_TTL:
+        flow_set_mpls_ttl(flow, 0, value->u8);
         break;
 
     case MFF_IPV4_SRC:
@@ -1472,6 +1532,18 @@ mf_set_wild(const struct mf_field *mf, struct match *match, char **err_str)
     case MFF_TUN_DST:
         match_set_tun_dst_masked(match, htonl(0), htonl(0));
         break;
+    case MFF_TUN_IPV6_SRC:
+        memset(&match->wc.masks.tunnel.ipv6_src, 0,
+               sizeof match->wc.masks.tunnel.ipv6_src);
+        memset(&match->flow.tunnel.ipv6_src, 0,
+               sizeof match->flow.tunnel.ipv6_src);
+        break;
+    case MFF_TUN_IPV6_DST:
+        memset(&match->wc.masks.tunnel.ipv6_dst, 0,
+               sizeof match->wc.masks.tunnel.ipv6_dst);
+        memset(&match->flow.tunnel.ipv6_dst, 0,
+               sizeof match->flow.tunnel.ipv6_dst);
+        break;
     case MFF_TUN_FLAGS:
         match_set_tun_flags_masked(match, 0, 0);
         break;
@@ -1543,6 +1615,12 @@ mf_set_wild(const struct mf_field *mf, struct match *match, char **err_str)
         match_set_xreg_masked(match, mf->id - MFF_XREG0, 0, 0);
         break;
 
+    CASE_MFF_XXREGS: {
+        match_set_xxreg_masked(match, mf->id - MFF_XXREG0, OVS_U128_ZERO,
+                               OVS_U128_ZERO);
+        break;
+    }
+
     case MFF_ETH_SRC:
         match->flow.dl_src = eth_addr_zero;
         match->wc.masks.dl_src = eth_addr_zero;
@@ -1582,6 +1660,10 @@ mf_set_wild(const struct mf_field *mf, struct match *match, char **err_str)
 
     case MFF_MPLS_BOS:
         match_set_any_mpls_bos(match, 0);
+        break;
+
+    case MFF_MPLS_TTL:
+        match_set_any_mpls_ttl(match, 0);
         break;
 
     case MFF_IPV4_SRC:
@@ -1740,6 +1822,7 @@ mf_set(const struct mf_field *mf,
     case MFF_MPLS_LABEL:
     case MFF_MPLS_TC:
     case MFF_MPLS_BOS:
+    case MFF_MPLS_TTL:
     case MFF_IP_PROTO:
     case MFF_IP_TTL:
     case MFF_IP_DSCP:
@@ -1763,6 +1846,12 @@ mf_set(const struct mf_field *mf,
         break;
     case MFF_TUN_DST:
         match_set_tun_dst_masked(match, value->be32, mask->be32);
+        break;
+    case MFF_TUN_IPV6_SRC:
+        match_set_tun_ipv6_src_masked(match, &value->ipv6, &mask->ipv6);
+        break;
+    case MFF_TUN_IPV6_DST:
+        match_set_tun_ipv6_dst_masked(match, &value->ipv6, &mask->ipv6);
         break;
     case MFF_TUN_FLAGS:
         match_set_tun_flags_masked(match, ntohs(value->be16), ntohs(mask->be16));
@@ -1797,6 +1886,12 @@ mf_set(const struct mf_field *mf,
                               ntohll(value->be64), ntohll(mask->be64));
         break;
 
+    CASE_MFF_XXREGS: {
+        match_set_xxreg_masked(match, mf->id - MFF_XXREG0,
+                ntoh128(value->be128), ntoh128(mask->be128));
+        break;
+    }
+
     case MFF_PKT_MARK:
         match_set_pkt_mark_masked(match, ntohl(value->be32),
                                   ntohl(mask->be32));
@@ -1810,18 +1905,10 @@ mf_set(const struct mf_field *mf,
         match_set_ct_mark_masked(match, ntohl(value->be32), ntohl(mask->be32));
         break;
 
-    case MFF_CT_LABEL: {
-        ovs_u128 hlabel, hmask;
-
-        ntoh128(&value->be128, &hlabel);
-        if (mask) {
-            ntoh128(&mask->be128, &hmask);
-        } else {
-            hmask.u64.lo = hmask.u64.hi = UINT64_MAX;
-        }
-        match_set_ct_label_masked(match, hlabel, hmask);
+    case MFF_CT_LABEL:
+        match_set_ct_label_masked(match, ntoh128(value->be128),
+                                  mask ? ntoh128(mask->be128) : OVS_U128_MAX);
         break;
-    }
 
     case MFF_ETH_DST:
         match_set_dl_dst_masked(match, value->mac, mask->mac);
@@ -2048,43 +2135,10 @@ mf_from_ipv4_string(const struct mf_field *mf, const char *s,
 
 static char *
 mf_from_ipv6_string(const struct mf_field *mf, const char *s,
-                    struct in6_addr *value, struct in6_addr *mask)
+                    struct in6_addr *ipv6, struct in6_addr *mask)
 {
-    char *str = xstrdup(s);
-    char *save_ptr = NULL;
-    const char *name, *netmask;
-    int retval;
-
-    ovs_assert(mf->n_bytes == sizeof *value);
-
-    name = strtok_r(str, "/", &save_ptr);
-    retval = name ? lookup_ipv6(name, value) : EINVAL;
-    if (retval) {
-        char *err;
-
-        err = xasprintf("%s: could not convert to IPv6 address", str);
-        free(str);
-
-        return err;
-    }
-
-    netmask = strtok_r(NULL, "/", &save_ptr);
-    if (netmask) {
-        if (inet_pton(AF_INET6, netmask, mask) != 1) {
-            int prefix = atoi(netmask);
-            if (prefix <= 0 || prefix > 128) {
-                free(str);
-                return xasprintf("%s: prefix bits not between 1 and 128", s);
-            } else {
-                *mask = ipv6_create_mask(prefix);
-            }
-        }
-    } else {
-        *mask = in6addr_exact;
-    }
-    free(str);
-
-    return NULL;
+    ovs_assert(mf->n_bytes == sizeof *ipv6);
+    return ipv6_parse_masked(s, ipv6, mask);
 }
 
 static char *
@@ -2422,7 +2476,7 @@ mf_format(const struct mf_field *mf,
         break;
 
     case MFS_IPV6:
-        print_ipv6_masked(s, &value->ipv6, mask ? &mask->ipv6 : NULL);
+        ipv6_format_masked(&value->ipv6, mask ? &mask->ipv6 : NULL, s);
         break;
 
     case MFS_FRAG:

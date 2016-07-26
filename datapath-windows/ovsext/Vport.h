@@ -17,9 +17,11 @@
 #ifndef __VPORT_H_
 #define __VPORT_H_ 1
 
+#include "Gre.h"
+#include "Stt.h"
 #include "Switch.h"
 #include "VxLan.h"
-#include "Stt.h"
+#include "Geneve.h"
 
 #define OVS_MAX_DPPORTS             MAXUINT16
 #define OVS_DPPORT_NUMBER_INVALID   OVS_MAX_DPPORTS
@@ -95,6 +97,7 @@ typedef struct _OVS_VPORT_ENTRY {
     PVOID                  priv;
     NDIS_SWITCH_PORT_ID    portId;
     NDIS_SWITCH_NIC_INDEX  nicIndex;
+    NDIS_SWITCH_NIC_TYPE   nicType;
     UINT16                 numaNodeId;
     NDIS_SWITCH_PORT_STATE portState;
     NDIS_SWITCH_NIC_STATE  nicState;
@@ -143,9 +146,14 @@ POVS_VPORT_ENTRY OvsFindVportByHvNameA(POVS_SWITCH_CONTEXT switchContext,
 POVS_VPORT_ENTRY OvsFindVportByPortIdAndNicIndex(POVS_SWITCH_CONTEXT switchContext,
                                                  NDIS_SWITCH_PORT_ID portId,
                                                  NDIS_SWITCH_NIC_INDEX index);
-POVS_VPORT_ENTRY OvsFindTunnelVportByDstPort(POVS_SWITCH_CONTEXT switchContext,
-                                             UINT16 dstPort,
-                                             OVS_VPORT_TYPE ovsVportType);
+POVS_VPORT_ENTRY OvsFindTunnelVportByDstPortAndType(POVS_SWITCH_CONTEXT switchContext,
+                                                    UINT16 dstPort,
+                                                    OVS_VPORT_TYPE ovsPortType);
+POVS_VPORT_ENTRY OvsFindTunnelVportByDstPortAndNWProto(POVS_SWITCH_CONTEXT switchContext,
+                                                       UINT16 dstPort,
+                                                       UINT8 nwProto);
+POVS_VPORT_ENTRY OvsFindTunnelVportByPortType(POVS_SWITCH_CONTEXT switchContext,
+                                              OVS_VPORT_TYPE ovsPortType);
 
 NDIS_STATUS OvsAddConfiguredSwitchPorts(struct _OVS_SWITCH_CONTEXT *switchContext);
 NDIS_STATUS OvsInitConfiguredSwitchNics(struct _OVS_SWITCH_CONTEXT *switchContext);
@@ -155,7 +163,8 @@ VOID OvsClearAllSwitchVports(struct _OVS_SWITCH_CONTEXT *switchContext);
 NDIS_STATUS HvCreateNic(POVS_SWITCH_CONTEXT switchContext,
                         PNDIS_SWITCH_NIC_PARAMETERS nicParam);
 NDIS_STATUS HvCreatePort(POVS_SWITCH_CONTEXT switchContext,
-                         PNDIS_SWITCH_PORT_PARAMETERS portParam);
+                         PNDIS_SWITCH_PORT_PARAMETERS portParam,
+                         NDIS_SWITCH_NIC_INDEX nicIndex);
 NDIS_STATUS HvUpdatePort(POVS_SWITCH_CONTEXT switchContext,
                          PNDIS_SWITCH_PORT_PARAMETERS portParam);
 VOID HvTeardownPort(POVS_SWITCH_CONTEXT switchContext,
@@ -175,6 +184,7 @@ static __inline BOOLEAN
 OvsIsTunnelVportType(OVS_VPORT_TYPE ovsType)
 {
     return ovsType == OVS_VPORT_TYPE_VXLAN ||
+           ovsType == OVS_VPORT_TYPE_GENEVE ||
            ovsType == OVS_VPORT_TYPE_STT ||
            ovsType == OVS_VPORT_TYPE_GRE;
 }
@@ -193,12 +203,39 @@ OvsIsInternalVportType(OVS_VPORT_TYPE ovsType)
 }
 
 static __inline BOOLEAN
+OvsIsVirtualExternalVport(POVS_VPORT_ENTRY vport)
+{
+    return vport->nicType == NdisSwitchNicTypeExternal &&
+           vport->nicIndex == 0;
+}
+
+static __inline BOOLEAN
+OvsIsRealExternalVport(POVS_VPORT_ENTRY vport)
+{
+    return vport->nicType == NdisSwitchNicTypeExternal &&
+           vport->nicIndex != 0;
+}
+
+static __inline BOOLEAN
 OvsIsBridgeInternalVport(POVS_VPORT_ENTRY vport)
 {
-    if (vport->isBridgeInternal) {
-       ASSERT(vport->ovsType == OVS_VPORT_TYPE_INTERNAL);
-    }
+    ASSERT(vport->isBridgeInternal != TRUE ||
+           vport->ovsType == OVS_VPORT_TYPE_INTERNAL);
     return vport->isBridgeInternal == TRUE;
+}
+
+static __inline BOOLEAN
+OvsIsInternalNIC(NDIS_SWITCH_NIC_TYPE   nicType)
+{
+    return nicType == NdisSwitchNicTypeInternal;
+}
+
+static __inline BOOLEAN
+OvsIsRealExternalNIC(NDIS_SWITCH_NIC_TYPE   nicType,
+                     NDIS_SWITCH_NIC_INDEX  nicIndex)
+{
+    return nicType == NdisSwitchNicTypeExternal &&
+           nicIndex != 0;
 }
 
 NTSTATUS OvsRemoveAndDeleteVport(PVOID usrParamsCtx,
@@ -227,16 +264,21 @@ GetPortFromPriv(POVS_VPORT_ENTRY vport)
     /* XXX would better to have a commom tunnel "parent" structure */
     ASSERT(vportPriv);
     switch(vport->ovsType) {
-    case OVS_VPORT_TYPE_VXLAN:
-        dstPort = ((POVS_VXLAN_VPORT)vportPriv)->dstPort;
+    case OVS_VPORT_TYPE_GRE:
         break;
     case OVS_VPORT_TYPE_STT:
         dstPort = ((POVS_STT_VPORT)vportPriv)->dstPort;
         break;
+    case OVS_VPORT_TYPE_VXLAN:
+        dstPort = ((POVS_VXLAN_VPORT)vportPriv)->dstPort;
+        break;
+    case OVS_VPORT_TYPE_GENEVE:
+        dstPort = ((POVS_GENEVE_VPORT) vportPriv)->dstPort;
+        break;
     default:
         ASSERT(! "Port is not a tunnel port");
     }
-    ASSERT(dstPort);
+    ASSERT(dstPort || vport->ovsType == OVS_VPORT_TYPE_GRE);
     return dstPort;
 }
 

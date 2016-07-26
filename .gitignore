@@ -50,6 +50,7 @@
 /depcomp
 /distfiles
 /dist-docs
+/flake8-check
 /install-sh
 /libtool
 /manpage-check
@@ -68,3 +69,6 @@ odp-netlink.h
 OvsDpInterface.h
 /.vagrant/
 testsuite.tmp.orig
+/rpm/
+/openvswitch*.tar.gz
+/tests/lcov/

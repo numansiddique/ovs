@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,13 @@
  */
 
 #include <config.h>
-#include "match.h"
+#include "openvswitch/match.h"
 #include <stdlib.h>
+#include "flow.h"
 #include "byte-order.h"
-#include "dynamic-string.h"
-#include "ofp-util.h"
+#include "colors.h"
+#include "openvswitch/dynamic-string.h"
+#include "openvswitch/ofp-util.h"
 #include "packets.h"
 #include "tun-metadata.h"
 
@@ -131,6 +133,21 @@ match_set_xreg_masked(struct match *match, unsigned int xreg_idx,
 }
 
 void
+match_set_xxreg(struct match *match, unsigned int xxreg_idx, ovs_u128 value)
+{
+    match_set_xxreg_masked(match, xxreg_idx, value, OVS_U128_MAX);
+}
+
+void
+match_set_xxreg_masked(struct match *match, unsigned int xxreg_idx,
+                      ovs_u128 value, ovs_u128 mask)
+{
+    ovs_assert(xxreg_idx < FLOW_N_XXREGS);
+    flow_wildcards_set_xxreg_mask(&match->wc, xxreg_idx, mask);
+    flow_set_xxreg(&match->flow, xxreg_idx, ovs_u128_and(value, mask));
+}
+
+void
 match_set_actset_output(struct match *match, ofp_port_t actset_output)
 {
     match->wc.masks.actset_output = u16_to_ofp(UINT16_MAX);
@@ -188,6 +205,36 @@ match_set_tun_dst_masked(struct match *match, ovs_be32 dst, ovs_be32 mask)
 {
     match->wc.masks.tunnel.ip_dst = mask;
     match->flow.tunnel.ip_dst = dst & mask;
+}
+
+void
+match_set_tun_ipv6_src(struct match *match, const struct in6_addr *src)
+{
+    match->flow.tunnel.ipv6_src = *src;
+    match->wc.masks.tunnel.ipv6_src = in6addr_exact;
+}
+
+void
+match_set_tun_ipv6_src_masked(struct match *match, const struct in6_addr *src,
+                              const struct in6_addr *mask)
+{
+    match->flow.tunnel.ipv6_src = ipv6_addr_bitand(src, mask);
+    match->wc.masks.tunnel.ipv6_src = *mask;
+}
+
+void
+match_set_tun_ipv6_dst(struct match *match, const struct in6_addr *dst)
+{
+    match->flow.tunnel.ipv6_dst = *dst;
+    match->wc.masks.tunnel.ipv6_dst = in6addr_exact;
+}
+
+void
+match_set_tun_ipv6_dst_masked(struct match *match, const struct in6_addr *dst,
+                              const struct in6_addr *mask)
+{
+    match->flow.tunnel.ipv6_dst = ipv6_addr_bitand(dst, mask);
+    match->wc.masks.tunnel.ipv6_dst = *mask;
 }
 
 void
@@ -561,6 +608,23 @@ match_set_mpls_bos(struct match *match, int idx, uint8_t mpls_bos)
     flow_set_mpls_bos(&match->flow, idx, mpls_bos);
 }
 
+/* Modifies 'match' so that the TTL of MPLS label 'idx' is wildcarded. */
+void
+match_set_any_mpls_ttl(struct match *match, int idx)
+{
+    match->wc.masks.mpls_lse[idx] &= ~htonl(MPLS_TTL_MASK);
+    flow_set_mpls_ttl(&match->flow, idx, 0);
+}
+
+/* Modifies 'match' so that it matches only packets in which the TTL of MPLS
+ * label 'idx' equals 'mpls_ttl'. */
+void
+match_set_mpls_ttl(struct match *match, int idx, uint8_t mpls_ttl)
+{
+    match->wc.masks.mpls_lse[idx] |= htonl(MPLS_TTL_MASK);
+    flow_set_mpls_ttl(&match->flow, idx, mpls_ttl);
+}
+
 /* Modifies 'match' so that the MPLS LSE is wildcarded. */
 void
 match_set_any_mpls_lse(struct match *match, int idx)
@@ -838,7 +902,7 @@ format_eth_masked(struct ds *s, const char *name,
                   const struct eth_addr eth, const struct eth_addr mask)
 {
     if (!eth_addr_is_zero(mask)) {
-        ds_put_format(s, "%s=", name);
+        ds_put_format(s, "%s%s=%s", colors.param, name, colors.end);
         eth_format_masked(eth, &mask, s);
         ds_put_char(s, ',');
     }
@@ -849,7 +913,7 @@ format_ip_netmask(struct ds *s, const char *name, ovs_be32 ip,
                   ovs_be32 netmask)
 {
     if (netmask) {
-        ds_put_format(s, "%s=", name);
+        ds_put_format(s, "%s%s=%s", colors.param, name, colors.end);
         ip_format_masked(ip, netmask, s);
         ds_put_char(s, ',');
     }
@@ -861,8 +925,8 @@ format_ipv6_netmask(struct ds *s, const char *name,
                     const struct in6_addr *netmask)
 {
     if (!ipv6_mask_is_any(netmask)) {
-        ds_put_format(s, "%s=", name);
-        print_ipv6_masked(s, addr, netmask);
+        ds_put_format(s, "%s%s=%s", colors.param, name, colors.end);
+        ipv6_format_masked(addr, netmask, s);
         ds_put_char(s, ',');
     }
 }
@@ -872,7 +936,7 @@ format_uint16_masked(struct ds *s, const char *name,
                    uint16_t value, uint16_t mask)
 {
     if (mask != 0) {
-        ds_put_format(s, "%s=", name);
+        ds_put_format(s, "%s%s=%s", colors.param, name, colors.end);
         if (mask == UINT16_MAX) {
             ds_put_format(s, "%"PRIu16, value);
         } else {
@@ -887,7 +951,7 @@ format_be16_masked(struct ds *s, const char *name,
                    ovs_be16 value, ovs_be16 mask)
 {
     if (mask != htons(0)) {
-        ds_put_format(s, "%s=", name);
+        ds_put_format(s, "%s%s=%s", colors.param, name, colors.end);
         if (mask == OVS_BE16_MAX) {
             ds_put_format(s, "%"PRIu16, ntohs(value));
         } else {
@@ -903,7 +967,7 @@ format_be32_masked(struct ds *s, const char *name,
                    ovs_be32 value, ovs_be32 mask)
 {
     if (mask != htonl(0)) {
-        ds_put_format(s, "%s=", name);
+        ds_put_format(s, "%s%s=%s", colors.param, name, colors.end);
         if (mask == OVS_BE32_MAX) {
             ds_put_format(s, "%"PRIu32, ntohl(value));
         } else {
@@ -919,7 +983,8 @@ format_uint32_masked(struct ds *s, const char *name,
                    uint32_t value, uint32_t mask)
 {
     if (mask) {
-        ds_put_format(s, "%s=%#"PRIx32, name, value);
+        ds_put_format(s, "%s%s=%s%#"PRIx32,
+                      colors.param, name, colors.end, value);
         if (mask != UINT32_MAX) {
             ds_put_format(s, "/%#"PRIx32, mask);
         }
@@ -932,7 +997,8 @@ format_be64_masked(struct ds *s, const char *name,
                    ovs_be64 value, ovs_be64 mask)
 {
     if (mask != htonll(0)) {
-        ds_put_format(s, "%s=%#"PRIx64, name, ntohll(value));
+        ds_put_format(s, "%s%s=%s%#"PRIx64,
+                      colors.param, name, colors.end, ntohll(value));
         if (mask != OVS_BE64_MAX) {
             ds_put_format(s, "/%#"PRIx64, ntohll(mask));
         }
@@ -949,6 +1015,10 @@ format_flow_tunnel(struct ds *s, const struct match *match)
     format_be64_masked(s, "tun_id", tnl->tun_id, wc->masks.tunnel.tun_id);
     format_ip_netmask(s, "tun_src", tnl->ip_src, wc->masks.tunnel.ip_src);
     format_ip_netmask(s, "tun_dst", tnl->ip_dst, wc->masks.tunnel.ip_dst);
+    format_ipv6_netmask(s, "tun_ipv6_src", &tnl->ipv6_src,
+                        &wc->masks.tunnel.ipv6_src);
+    format_ipv6_netmask(s, "tun_ipv6_dst", &tnl->ipv6_dst,
+                        &wc->masks.tunnel.ipv6_dst);
 
     if (wc->masks.tunnel.gbp_id) {
         format_be16_masked(s, "tun_gbp_id", tnl->gbp_id,
@@ -978,14 +1048,12 @@ format_flow_tunnel(struct ds *s, const struct match *match)
 static void
 format_ct_label_masked(struct ds *s, const ovs_u128 *key, const ovs_u128 *mask)
 {
-    if (!ovs_u128_is_zero(mask)) {
-        ovs_be128 value;
-
-        hton128(key, &value);
-        ds_put_format(s, "ct_label=");
+    if (!ovs_u128_is_zero(*mask)) {
+        ovs_be128 value = hton128(*key);
+        ds_put_format(s, "%sct_label=%s", colors.param, colors.end);
         ds_put_hex(s, &value, sizeof value);
         if (!is_all_ones(mask, sizeof(*mask))) {
-            hton128(mask, &value);
+            value = hton128(*mask);
             ds_put_char(s, '/');
             ds_put_hex(s, &value, sizeof value);
         }
@@ -1002,14 +1070,16 @@ match_format(const struct match *match, struct ds *s, int priority)
     size_t start_len = s->length;
     const struct flow *f = &match->flow;
     bool skip_type = false;
+
     bool skip_proto = false;
 
     int i;
 
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 34);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 36);
 
     if (priority != OFP_DEFAULT_PRIORITY) {
-        ds_put_format(s, "priority=%d,", priority);
+        ds_put_format(s, "%spriority=%s%d,",
+                      colors.special, colors.end, priority);
     }
 
     format_uint32_masked(s, "pkt_mark", f->pkt_mark, wc->masks.pkt_mark);
@@ -1025,22 +1095,24 @@ match_format(const struct match *match, struct ds *s, int priority)
     }
 
     if (wc->masks.conj_id) {
-        ds_put_format(s, "conj_id=%"PRIu32",", f->conj_id);
+        ds_put_format(s, "%sconj_id%s=%"PRIu32",",
+                      colors.param, colors.end, f->conj_id);
     }
 
     if (wc->masks.skb_priority) {
-        ds_put_format(s, "skb_priority=%#"PRIx32",", f->skb_priority);
+        ds_put_format(s, "%sskb_priority=%s%#"PRIx32",",
+                      colors.param, colors.end, f->skb_priority);
     }
 
     if (wc->masks.actset_output) {
-        ds_put_cstr(s, "actset_output=");
+        ds_put_format(s, "%sactset_output=%s", colors.param, colors.end);
         ofputil_format_port(f->actset_output, s);
         ds_put_char(s, ',');
     }
 
     if (wc->masks.ct_state) {
         if (wc->masks.ct_state == UINT16_MAX) {
-            ds_put_cstr(s, "ct_state=");
+            ds_put_format(s, "%sct_state=%s", colors.param, colors.end);
             if (f->ct_state) {
                 format_flags(s, ct_state_to_string, f->ct_state, '|');
             } else {
@@ -1061,7 +1133,7 @@ match_format(const struct match *match, struct ds *s, int priority)
         format_uint32_masked(s, "ct_mark", f->ct_mark, wc->masks.ct_mark);
     }
 
-    if (!ovs_u128_is_zero(&wc->masks.ct_label)) {
+    if (!ovs_u128_is_zero(wc->masks.ct_label)) {
         format_ct_label_masked(s, &f->ct_label, &wc->masks.ct_label);
     }
 
@@ -1071,48 +1143,48 @@ match_format(const struct match *match, struct ds *s, int priority)
             if (wc->masks.nw_proto) {
                 skip_proto = true;
                 if (f->nw_proto == IPPROTO_ICMP) {
-                    ds_put_cstr(s, "icmp,");
+                    ds_put_format(s, "%sicmp%s,", colors.value, colors.end);
                 } else if (f->nw_proto == IPPROTO_IGMP) {
-                    ds_put_cstr(s, "igmp,");
+                    ds_put_format(s, "%sigmp%s,", colors.value, colors.end);
                 } else if (f->nw_proto == IPPROTO_TCP) {
-                    ds_put_cstr(s, "tcp,");
+                    ds_put_format(s, "%stcp%s,", colors.value, colors.end);
                 } else if (f->nw_proto == IPPROTO_UDP) {
-                    ds_put_cstr(s, "udp,");
+                    ds_put_format(s, "%sudp%s,", colors.value, colors.end);
                 } else if (f->nw_proto == IPPROTO_SCTP) {
-                    ds_put_cstr(s, "sctp,");
+                    ds_put_format(s, "%ssctp%s,", colors.value, colors.end);
                 } else {
-                    ds_put_cstr(s, "ip,");
+                    ds_put_format(s, "%sip%s,", colors.value, colors.end);
                     skip_proto = false;
                 }
             } else {
-                ds_put_cstr(s, "ip,");
+                ds_put_format(s, "%sip%s,", colors.value, colors.end);
             }
         } else if (f->dl_type == htons(ETH_TYPE_IPV6)) {
             if (wc->masks.nw_proto) {
                 skip_proto = true;
                 if (f->nw_proto == IPPROTO_ICMPV6) {
-                    ds_put_cstr(s, "icmp6,");
+                    ds_put_format(s, "%sicmp6%s,", colors.value, colors.end);
                 } else if (f->nw_proto == IPPROTO_TCP) {
-                    ds_put_cstr(s, "tcp6,");
+                    ds_put_format(s, "%stcp6%s,", colors.value, colors.end);
                 } else if (f->nw_proto == IPPROTO_UDP) {
-                    ds_put_cstr(s, "udp6,");
+                    ds_put_format(s, "%sudp6%s,", colors.value, colors.end);
                 } else if (f->nw_proto == IPPROTO_SCTP) {
-                    ds_put_cstr(s, "sctp6,");
+                    ds_put_format(s, "%ssctp6%s,", colors.value, colors.end);
                 } else {
-                    ds_put_cstr(s, "ipv6,");
+                    ds_put_format(s, "%sipv6%s,", colors.value, colors.end);
                     skip_proto = false;
                 }
             } else {
-                ds_put_cstr(s, "ipv6,");
+                ds_put_format(s, "%sipv6%s,", colors.value, colors.end);
             }
         } else if (f->dl_type == htons(ETH_TYPE_ARP)) {
-            ds_put_cstr(s, "arp,");
+            ds_put_format(s, "%sarp%s,", colors.value, colors.end);
         } else if (f->dl_type == htons(ETH_TYPE_RARP)) {
-            ds_put_cstr(s, "rarp,");
+            ds_put_format(s, "%srarp%s,", colors.value, colors.end);
         } else if (f->dl_type == htons(ETH_TYPE_MPLS)) {
-            ds_put_cstr(s, "mpls,");
+            ds_put_format(s, "%smpls%s,", colors.value, colors.end);
         } else if (f->dl_type == htons(ETH_TYPE_MPLS_MCAST)) {
-            ds_put_cstr(s, "mplsm,");
+            ds_put_format(s, "%smplsm%s,", colors.value, colors.end);
         } else {
             skip_type = false;
         }
@@ -1131,7 +1203,7 @@ match_format(const struct match *match, struct ds *s, int priority)
     format_be64_masked(s, "metadata", f->metadata, wc->masks.metadata);
 
     if (wc->masks.in_port.ofp_port) {
-        ds_put_cstr(s, "in_port=");
+        ds_put_format(s, "%sin_port=%s", colors.param, colors.end);
         ofputil_format_port(f->in_port.ofp_port, s);
         ds_put_char(s, ',');
     }
@@ -1145,35 +1217,39 @@ match_format(const struct match *match, struct ds *s, int priority)
             && (!pcp_mask || pcp_mask == htons(VLAN_PCP_MASK))
             && (vid_mask || pcp_mask)) {
             if (vid_mask) {
-                ds_put_format(s, "dl_vlan=%"PRIu16",",
-                              vlan_tci_to_vid(f->vlan_tci));
+                ds_put_format(s, "%sdl_vlan=%s%"PRIu16",", colors.param,
+                              colors.end, vlan_tci_to_vid(f->vlan_tci));
             }
             if (pcp_mask) {
-                ds_put_format(s, "dl_vlan_pcp=%d,",
-                              vlan_tci_to_pcp(f->vlan_tci));
+                ds_put_format(s, "%sdl_vlan_pcp=%s%d,", colors.param,
+                              colors.end, vlan_tci_to_pcp(f->vlan_tci));
             }
         } else if (wc->masks.vlan_tci == htons(0xffff)) {
-            ds_put_format(s, "vlan_tci=0x%04"PRIx16",", ntohs(f->vlan_tci));
+            ds_put_format(s, "%svlan_tci=%s0x%04"PRIx16",", colors.param,
+                          colors.end, ntohs(f->vlan_tci));
         } else {
-            ds_put_format(s, "vlan_tci=0x%04"PRIx16"/0x%04"PRIx16",",
+            ds_put_format(s, "%svlan_tci=%s0x%04"PRIx16"/0x%04"PRIx16",",
+                          colors.param, colors.end,
                           ntohs(f->vlan_tci), ntohs(wc->masks.vlan_tci));
         }
     }
     format_eth_masked(s, "dl_src", f->dl_src, wc->masks.dl_src);
     format_eth_masked(s, "dl_dst", f->dl_dst, wc->masks.dl_dst);
     if (!skip_type && wc->masks.dl_type) {
-        ds_put_format(s, "dl_type=0x%04"PRIx16",", ntohs(f->dl_type));
+        ds_put_format(s, "%sdl_type=%s0x%04"PRIx16",",
+                      colors.param, colors.end, ntohs(f->dl_type));
     }
     if (f->dl_type == htons(ETH_TYPE_IPV6)) {
         format_ipv6_netmask(s, "ipv6_src", &f->ipv6_src, &wc->masks.ipv6_src);
         format_ipv6_netmask(s, "ipv6_dst", &f->ipv6_dst, &wc->masks.ipv6_dst);
         if (wc->masks.ipv6_label) {
             if (wc->masks.ipv6_label == OVS_BE32_MAX) {
-                ds_put_format(s, "ipv6_label=0x%05"PRIx32",",
+                ds_put_format(s, "%sipv6_label=%s0x%05"PRIx32",",
+                              colors.param, colors.end,
                               ntohl(f->ipv6_label));
             } else {
-                ds_put_format(s, "ipv6_label=0x%05"PRIx32"/0x%05"PRIx32",",
-                              ntohl(f->ipv6_label),
+                ds_put_format(s, "%sipv6_label=%s0x%05"PRIx32"/0x%05"PRIx32",",
+                              colors.param, colors.end, ntohl(f->ipv6_label),
                               ntohl(wc->masks.ipv6_label));
             }
         }
@@ -1188,9 +1264,11 @@ match_format(const struct match *match, struct ds *s, int priority)
     if (!skip_proto && wc->masks.nw_proto) {
         if (f->dl_type == htons(ETH_TYPE_ARP) ||
             f->dl_type == htons(ETH_TYPE_RARP)) {
-            ds_put_format(s, "arp_op=%"PRIu8",", f->nw_proto);
+            ds_put_format(s, "%sarp_op=%s%"PRIu8",",
+                          colors.param, colors.end, f->nw_proto);
         } else {
-            ds_put_format(s, "nw_proto=%"PRIu8",", f->nw_proto);
+            ds_put_format(s, "%snw_proto=%s%"PRIu8",",
+                          colors.param, colors.end, f->nw_proto);
         }
     }
     if (f->dl_type == htons(ETH_TYPE_ARP) ||
@@ -1199,28 +1277,31 @@ match_format(const struct match *match, struct ds *s, int priority)
         format_eth_masked(s, "arp_tha", f->arp_tha, wc->masks.arp_tha);
     }
     if (wc->masks.nw_tos & IP_DSCP_MASK) {
-        ds_put_format(s, "nw_tos=%"PRIu8",", f->nw_tos & IP_DSCP_MASK);
+        ds_put_format(s, "%snw_tos=%s%"PRIu8",",
+                      colors.param, colors.end, f->nw_tos & IP_DSCP_MASK);
     }
     if (wc->masks.nw_tos & IP_ECN_MASK) {
-        ds_put_format(s, "nw_ecn=%"PRIu8",", f->nw_tos & IP_ECN_MASK);
+        ds_put_format(s, "%snw_ecn=%s%"PRIu8",",
+                      colors.param, colors.end, f->nw_tos & IP_ECN_MASK);
     }
     if (wc->masks.nw_ttl) {
-        ds_put_format(s, "nw_ttl=%"PRIu8",", f->nw_ttl);
+        ds_put_format(s, "%snw_ttl=%s%"PRIu8",",
+                      colors.param, colors.end, f->nw_ttl);
     }
     if (wc->masks.mpls_lse[0] & htonl(MPLS_LABEL_MASK)) {
-        ds_put_format(s, "mpls_label=%"PRIu32",",
-                      mpls_lse_to_label(f->mpls_lse[0]));
+        ds_put_format(s, "%smpls_label=%s%"PRIu32",", colors.param,
+                      colors.end, mpls_lse_to_label(f->mpls_lse[0]));
     }
     if (wc->masks.mpls_lse[0] & htonl(MPLS_TC_MASK)) {
-        ds_put_format(s, "mpls_tc=%"PRIu8",",
+        ds_put_format(s, "%smpls_tc=%s%"PRIu8",", colors.param, colors.end,
                       mpls_lse_to_tc(f->mpls_lse[0]));
     }
     if (wc->masks.mpls_lse[0] & htonl(MPLS_TTL_MASK)) {
-        ds_put_format(s, "mpls_ttl=%"PRIu8",",
+        ds_put_format(s, "%smpls_ttl=%s%"PRIu8",", colors.param, colors.end,
                       mpls_lse_to_ttl(f->mpls_lse[0]));
     }
     if (wc->masks.mpls_lse[0] & htonl(MPLS_BOS_MASK)) {
-        ds_put_format(s, "mpls_bos=%"PRIu8",",
+        ds_put_format(s, "%smpls_bos=%s%"PRIu8",", colors.param, colors.end,
                       mpls_lse_to_bos(f->mpls_lse[0]));
     }
     format_be32_masked(s, "mpls_lse1", f->mpls_lse[1], wc->masks.mpls_lse[1]);
@@ -1228,19 +1309,19 @@ match_format(const struct match *match, struct ds *s, int priority)
 
     switch (wc->masks.nw_frag) {
     case FLOW_NW_FRAG_ANY | FLOW_NW_FRAG_LATER:
-        ds_put_format(s, "nw_frag=%s,",
+        ds_put_format(s, "%snw_frag=%s%s,", colors.param, colors.end,
                       f->nw_frag & FLOW_NW_FRAG_ANY
                       ? (f->nw_frag & FLOW_NW_FRAG_LATER ? "later" : "first")
                       : (f->nw_frag & FLOW_NW_FRAG_LATER ? "<error>" : "no"));
         break;
 
     case FLOW_NW_FRAG_ANY:
-        ds_put_format(s, "nw_frag=%s,",
+        ds_put_format(s, "%snw_frag=%s%s,", colors.param, colors.end,
                       f->nw_frag & FLOW_NW_FRAG_ANY ? "yes" : "no");
         break;
 
     case FLOW_NW_FRAG_LATER:
-        ds_put_format(s, "nw_frag=%s,",
+        ds_put_format(s, "%snw_frag=%s%s,", colors.param, colors.end,
                       f->nw_frag & FLOW_NW_FRAG_LATER ? "later" : "not_later");
         break;
     }

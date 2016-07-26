@@ -38,18 +38,24 @@
 #include <stdint.h>
 #include "compiler.h"
 #include "ovsdb-types.h"
+#include "ovsdb-data.h"
+#include "openvswitch/list.h"
+#include "ovsdb-condition.h"
 
 struct json;
 struct ovsdb_datum;
 struct ovsdb_idl_class;
+struct ovsdb_idl_row;
 struct ovsdb_idl_column;
 struct ovsdb_idl_table_class;
+struct ovsdb_idl_condition;
 struct uuid;
 
 struct ovsdb_idl *ovsdb_idl_create(const char *remote,
                                    const struct ovsdb_idl_class *,
                                    bool monitor_everything_by_default,
                                    bool retry);
+void ovsdb_idl_set_remote(struct ovsdb_idl *, const char *, bool);
 void ovsdb_idl_destroy(struct ovsdb_idl *);
 
 void ovsdb_idl_run(struct ovsdb_idl *);
@@ -59,6 +65,7 @@ void ovsdb_idl_set_lock(struct ovsdb_idl *, const char *lock_name);
 bool ovsdb_idl_has_lock(const struct ovsdb_idl *);
 bool ovsdb_idl_is_lock_contended(const struct ovsdb_idl *);
 
+const struct uuid  * ovsdb_idl_get_monitor_id(const struct ovsdb_idl *);
 unsigned int ovsdb_idl_get_seqno(const struct ovsdb_idl *);
 bool ovsdb_idl_has_ever_connected(const struct ovsdb_idl *);
 void ovsdb_idl_enable_reconnect(struct ovsdb_idl *);
@@ -67,6 +74,8 @@ void ovsdb_idl_verify_write_only(struct ovsdb_idl *);
 
 bool ovsdb_idl_is_alive(const struct ovsdb_idl *);
 int ovsdb_idl_get_last_error(const struct ovsdb_idl *);
+
+void ovsdb_idl_set_probe_interval(const struct ovsdb_idl *, int probe_interval);
 
 /* Choosing columns and tables to replicate. */
 
@@ -93,9 +102,14 @@ int ovsdb_idl_get_last_error(const struct ovsdb_idl *);
  *     is suitable only for use by a client that "owns" a particular column.
  *
  *   - OVDSB_IDL_ALERT without OVSDB_IDL_MONITOR is not valid.
+ *
+ *   - (OVSDB_IDL_MONITOR | OVSDB_IDL_ALERT | OVSDB_IDL_TRACK), for a column
+ *     that a client wants to track using the change tracking
+ *     ovsdb_idl_track_get_*() functions.
  */
 #define OVSDB_IDL_MONITOR (1 << 0) /* Monitor this column? */
 #define OVSDB_IDL_ALERT   (1 << 1) /* Alert client when column updated? */
+#define OVSDB_IDL_TRACK   (1 << 2)
 
 void ovsdb_idl_add_column(struct ovsdb_idl *, const struct ovsdb_idl_column *);
 void ovsdb_idl_add_table(struct ovsdb_idl *,
@@ -103,6 +117,46 @@ void ovsdb_idl_add_table(struct ovsdb_idl *,
 
 void ovsdb_idl_omit(struct ovsdb_idl *, const struct ovsdb_idl_column *);
 void ovsdb_idl_omit_alert(struct ovsdb_idl *, const struct ovsdb_idl_column *);
+
+/* Change tracking.
+ *
+ * In OVSDB, change tracking is applied at each client in the IDL layer.  This
+ * means that when a client makes a request to track changes on a particular
+ * table, they are essentially requesting information about the incremental
+ * changes to that table from the point in time that the request is made.  Once
+ * the client clears tracked changes, that information will no longer be
+ * available.
+ *
+ * The implication of the above is that if a client requires replaying
+ * untracked history, it faces the choice of either trying to remember changes
+ * itself (which translates into a memory leak) or of being structured with a
+ * path for processing the full untracked table as well as a path that
+ * processes incremental changes. */
+enum ovsdb_idl_change {
+    OVSDB_IDL_CHANGE_INSERT,
+    OVSDB_IDL_CHANGE_MODIFY,
+    OVSDB_IDL_CHANGE_DELETE,
+    OVSDB_IDL_CHANGE_MAX
+};
+
+/* Row, table sequence numbers */
+unsigned int ovsdb_idl_table_get_seqno(
+    const struct ovsdb_idl *idl,
+    const struct ovsdb_idl_table_class *table_class);
+unsigned int ovsdb_idl_row_get_seqno(
+    const struct ovsdb_idl_row *row,
+    enum ovsdb_idl_change change);
+
+void ovsdb_idl_track_add_column(struct ovsdb_idl *idl,
+                                const struct ovsdb_idl_column *column);
+void ovsdb_idl_track_add_all(struct ovsdb_idl *idl);
+const struct ovsdb_idl_row *ovsdb_idl_track_get_first(
+    const struct ovsdb_idl *, const struct ovsdb_idl_table_class *);
+const struct ovsdb_idl_row *ovsdb_idl_track_get_next(const struct ovsdb_idl_row *);
+bool ovsdb_idl_track_is_updated(const struct ovsdb_idl_row *row,
+                                const struct ovsdb_idl_column *column);
+void ovsdb_idl_track_clear(const struct ovsdb_idl *);
+
 
 /* Reading the database replica. */
 
@@ -216,6 +270,12 @@ void ovsdb_idl_txn_write(const struct ovsdb_idl_row *,
 void ovsdb_idl_txn_write_clone(const struct ovsdb_idl_row *,
                                const struct ovsdb_idl_column *,
                                const struct ovsdb_datum *);
+void ovsdb_idl_txn_write_partial_map(const struct ovsdb_idl_row *,
+                                     const struct ovsdb_idl_column *,
+                                     struct ovsdb_datum *);
+void ovsdb_idl_txn_delete_partial_map(const struct ovsdb_idl_row *,
+                                      const struct ovsdb_idl_column *,
+                                      struct ovsdb_datum *);
 void ovsdb_idl_txn_delete(const struct ovsdb_idl_row *);
 const struct ovsdb_idl_row *ovsdb_idl_txn_insert(
     struct ovsdb_idl_txn *, const struct ovsdb_idl_table_class *,
@@ -242,5 +302,30 @@ struct ovsdb_idl_loop {
 void ovsdb_idl_loop_destroy(struct ovsdb_idl_loop *);
 struct ovsdb_idl_txn *ovsdb_idl_loop_run(struct ovsdb_idl_loop *);
 void ovsdb_idl_loop_commit_and_wait(struct ovsdb_idl_loop *);
+
+struct ovsdb_idl_condition {
+    const struct ovsdb_idl_table_class *tc;
+    struct ovs_list clauses;
+};
+
+struct ovsdb_idl_clause {
+    struct ovs_list node;
+    enum ovsdb_function function;
+    const struct ovsdb_idl_column *column;
+    struct ovsdb_datum arg;
+};
+
+void ovsdb_idl_condition_reset(struct ovsdb_idl *idl,
+                               const struct ovsdb_idl_table_class *tc);
+void ovsdb_idl_condition_add_clause(struct ovsdb_idl *idl,
+                                    const struct ovsdb_idl_table_class *tc,
+                                    enum ovsdb_function function,
+                                    const struct ovsdb_idl_column *column,
+                                    struct ovsdb_datum *arg);
+void ovsdb_idl_condition_remove_clause(struct ovsdb_idl *idl,
+                                       const struct ovsdb_idl_table_class *tc,
+                                       enum ovsdb_function function,
+                                       const struct ovsdb_idl_column *column,
+                                       struct ovsdb_datum *arg);
 
 #endif /* ovsdb-idl.h */

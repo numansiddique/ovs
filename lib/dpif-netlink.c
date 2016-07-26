@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,21 +34,22 @@
 
 #include "bitmap.h"
 #include "dpif-provider.h"
-#include "dynamic-string.h"
+#include "openvswitch/dynamic-string.h"
 #include "flow.h"
 #include "fat-rwlock.h"
 #include "netdev.h"
 #include "netdev-linux.h"
 #include "netdev-vport.h"
+#include "netlink-conntrack.h"
 #include "netlink-notifier.h"
 #include "netlink-socket.h"
 #include "netlink.h"
 #include "odp-util.h"
-#include "ofpbuf.h"
+#include "openvswitch/ofpbuf.h"
 #include "packets.h"
 #include "poll-loop.h"
 #include "random.h"
-#include "shash.h"
+#include "openvswitch/shash.h"
 #include "sset.h"
 #include "timeval.h"
 #include "unaligned.h"
@@ -1971,18 +1972,12 @@ parse_odp_packet(const struct dpif_netlink *dpif, struct ofpbuf *buf,
         [OVS_PACKET_ATTR_MRU] = { .type = NL_A_U16, .optional = true }
     };
 
-    struct ovs_header *ovs_header;
+    struct ofpbuf b = ofpbuf_const_initializer(buf->data, buf->size);
+    struct nlmsghdr *nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
+    struct genlmsghdr *genl = ofpbuf_try_pull(&b, sizeof *genl);
+    struct ovs_header *ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
+
     struct nlattr *a[ARRAY_SIZE(ovs_packet_policy)];
-    struct nlmsghdr *nlmsg;
-    struct genlmsghdr *genl;
-    struct ofpbuf b;
-    int type;
-
-    ofpbuf_use_const(&b, buf->data, buf->size);
-
-    nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
-    genl = ofpbuf_try_pull(&b, sizeof *genl);
-    ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
     if (!nlmsg || !genl || !ovs_header
         || nlmsg->nlmsg_type != ovs_packet_family
         || !nl_policy_parse(&b, 0, ovs_packet_policy, a,
@@ -1990,9 +1985,9 @@ parse_odp_packet(const struct dpif_netlink *dpif, struct ofpbuf *buf,
         return EINVAL;
     }
 
-    type = (genl->cmd == OVS_PACKET_CMD_MISS ? DPIF_UC_MISS
-            : genl->cmd == OVS_PACKET_CMD_ACTION ? DPIF_UC_ACTION
-            : -1);
+    int type = (genl->cmd == OVS_PACKET_CMD_MISS ? DPIF_UC_MISS
+                : genl->cmd == OVS_PACKET_CMD_ACTION ? DPIF_UC_ACTION
+                : -1);
     if (type < 0) {
         return EINVAL;
     }
@@ -2279,6 +2274,67 @@ dpif_netlink_get_datapath_version(void)
     return version_str;
 }
 
+struct dpif_netlink_ct_dump_state {
+    struct ct_dpif_dump_state up;
+    struct nl_ct_dump_state *nl_ct_dump;
+};
+
+static int
+dpif_netlink_ct_dump_start(struct dpif *dpif OVS_UNUSED,
+                           struct ct_dpif_dump_state **dump_,
+                           const uint16_t *zone)
+{
+    struct dpif_netlink_ct_dump_state *dump;
+    int err;
+
+    dump = xzalloc(sizeof *dump);
+    err = nl_ct_dump_start(&dump->nl_ct_dump, zone);
+    if (err) {
+        free(dump);
+        return err;
+    }
+
+    *dump_ = &dump->up;
+
+    return 0;
+}
+
+static int
+dpif_netlink_ct_dump_next(struct dpif *dpif OVS_UNUSED,
+                          struct ct_dpif_dump_state *dump_,
+                          struct ct_dpif_entry *entry)
+{
+    struct dpif_netlink_ct_dump_state *dump;
+
+    INIT_CONTAINER(dump, dump_, up);
+
+    return nl_ct_dump_next(dump->nl_ct_dump, entry);
+}
+
+static int
+dpif_netlink_ct_dump_done(struct dpif *dpif OVS_UNUSED,
+                          struct ct_dpif_dump_state *dump_)
+{
+    struct dpif_netlink_ct_dump_state *dump;
+    int err;
+
+    INIT_CONTAINER(dump, dump_, up);
+
+    err = nl_ct_dump_done(dump->nl_ct_dump);
+    free(dump);
+    return err;
+}
+
+static int
+dpif_netlink_ct_flush(struct dpif *dpif OVS_UNUSED, const uint16_t *zone)
+{
+    if (zone) {
+        return nl_ct_flush_zone(*zone);
+    } else {
+        return nl_ct_flush();
+    }
+}
+
 const struct dpif_class dpif_netlink_class = {
     "system",
     NULL,                       /* init */
@@ -2319,6 +2375,10 @@ const struct dpif_class dpif_netlink_class = {
     NULL,                       /* enable_upcall */
     NULL,                       /* disable_upcall */
     dpif_netlink_get_datapath_version, /* get_datapath_version */
+    dpif_netlink_ct_dump_start,
+    dpif_netlink_ct_dump_next,
+    dpif_netlink_ct_dump_done,
+    dpif_netlink_ct_flush
 };
 
 static int
@@ -2331,9 +2391,9 @@ dpif_netlink_init(void)
         error = nl_lookup_genl_family(OVS_DATAPATH_FAMILY,
                                       &ovs_datapath_family);
         if (error) {
-            VLOG_ERR("Generic Netlink family '%s' does not exist. "
-                     "The Open vSwitch kernel module is probably not loaded.",
-                     OVS_DATAPATH_FAMILY);
+            VLOG_WARN("Generic Netlink family '%s' does not exist. "
+                      "The Open vSwitch kernel module is probably not loaded.",
+                      OVS_DATAPATH_FAMILY);
         }
         if (!error) {
             error = nl_lookup_genl_family(OVS_VPORT_FAMILY, &ovs_vport_family);
@@ -2373,7 +2433,7 @@ dpif_netlink_is_internal_device(const char *name)
 
     return reply.type == OVS_VPORT_TYPE_INTERNAL;
 }
-
+
 /* Parses the contents of 'buf', which contains a "struct ovs_header" followed
  * by Netlink attributes, into 'vport'.  Returns 0 if successful, otherwise a
  * positive errno value.
@@ -2394,18 +2454,14 @@ dpif_netlink_vport_from_ofpbuf(struct dpif_netlink_vport *vport,
         [OVS_VPORT_ATTR_OPTIONS] = { .type = NL_A_NESTED, .optional = true },
     };
 
-    struct nlattr *a[ARRAY_SIZE(ovs_vport_policy)];
-    struct ovs_header *ovs_header;
-    struct nlmsghdr *nlmsg;
-    struct genlmsghdr *genl;
-    struct ofpbuf b;
-
     dpif_netlink_vport_init(vport);
 
-    ofpbuf_use_const(&b, buf->data, buf->size);
-    nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
-    genl = ofpbuf_try_pull(&b, sizeof *genl);
-    ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
+    struct ofpbuf b = ofpbuf_const_initializer(buf->data, buf->size);
+    struct nlmsghdr *nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
+    struct genlmsghdr *genl = ofpbuf_try_pull(&b, sizeof *genl);
+    struct ovs_header *ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
+
+    struct nlattr *a[ARRAY_SIZE(ovs_vport_policy)];
     if (!nlmsg || !genl || !ovs_header
         || nlmsg->nlmsg_type != ovs_vport_family
         || !nl_policy_parse(&b, 0, ovs_vport_policy, a,
@@ -2562,18 +2618,14 @@ dpif_netlink_dp_from_ofpbuf(struct dpif_netlink_dp *dp, const struct ofpbuf *buf
                         .optional = true },
     };
 
-    struct nlattr *a[ARRAY_SIZE(ovs_datapath_policy)];
-    struct ovs_header *ovs_header;
-    struct nlmsghdr *nlmsg;
-    struct genlmsghdr *genl;
-    struct ofpbuf b;
-
     dpif_netlink_dp_init(dp);
 
-    ofpbuf_use_const(&b, buf->data, buf->size);
-    nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
-    genl = ofpbuf_try_pull(&b, sizeof *genl);
-    ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
+    struct ofpbuf b = ofpbuf_const_initializer(buf->data, buf->size);
+    struct nlmsghdr *nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
+    struct genlmsghdr *genl = ofpbuf_try_pull(&b, sizeof *genl);
+    struct ovs_header *ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
+
+    struct nlattr *a[ARRAY_SIZE(ovs_datapath_policy)];
     if (!nlmsg || !genl || !ovs_header
         || nlmsg->nlmsg_type != ovs_datapath_family
         || !nl_policy_parse(&b, 0, ovs_datapath_policy, a,
@@ -2720,18 +2772,14 @@ dpif_netlink_flow_from_ofpbuf(struct dpif_netlink_flow *flow,
         /* The kernel never uses OVS_FLOW_ATTR_UFID_FLAGS. */
     };
 
-    struct nlattr *a[ARRAY_SIZE(ovs_flow_policy)];
-    struct ovs_header *ovs_header;
-    struct nlmsghdr *nlmsg;
-    struct genlmsghdr *genl;
-    struct ofpbuf b;
-
     dpif_netlink_flow_init(flow);
 
-    ofpbuf_use_const(&b, buf->data, buf->size);
-    nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
-    genl = ofpbuf_try_pull(&b, sizeof *genl);
-    ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
+    struct ofpbuf b = ofpbuf_const_initializer(buf->data, buf->size);
+    struct nlmsghdr *nlmsg = ofpbuf_try_pull(&b, sizeof *nlmsg);
+    struct genlmsghdr *genl = ofpbuf_try_pull(&b, sizeof *genl);
+    struct ovs_header *ovs_header = ofpbuf_try_pull(&b, sizeof *ovs_header);
+
+    struct nlattr *a[ARRAY_SIZE(ovs_flow_policy)];
     if (!nlmsg || !genl || !ovs_header
         || nlmsg->nlmsg_type != ovs_flow_family
         || !nl_policy_parse(&b, 0, ovs_flow_policy, a,
@@ -2889,7 +2937,7 @@ dpif_netlink_flow_get_stats(const struct dpif_netlink_flow *flow,
     stats->used = flow->used ? get_32aligned_u64(flow->used) : 0;
     stats->tcp_flags = flow->tcp_flags ? *flow->tcp_flags : 0;
 }
-
+
 /* Logs information about a packet that was recently lost in 'ch' (in
  * 'dpif_'). */
 static void

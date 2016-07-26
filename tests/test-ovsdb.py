@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
+
 import getopt
 import re
 import os
@@ -23,10 +25,11 @@ from ovs.db import error
 import ovs.db.idl
 import ovs.db.schema
 from ovs.db import data
-from ovs.db import types
+import ovs.db.types
 import ovs.ovsuuid
 import ovs.poller
 import ovs.util
+import six
 
 
 def unbox_json(json):
@@ -37,8 +40,8 @@ def unbox_json(json):
 
 
 def do_default_atoms():
-    for type_ in types.ATOMIC_TYPES:
-        if type_ == types.VoidType:
+    for type_ in ovs.db.types.ATOMIC_TYPES:
+        if type_ == ovs.db.types.VoidType:
             continue
 
         sys.stdout.write("%s: " % type_.to_string())
@@ -54,15 +57,16 @@ def do_default_atoms():
 def do_default_data():
     any_errors = False
     for n_min in 0, 1:
-        for key in types.ATOMIC_TYPES:
-            if key == types.VoidType:
+        for key in ovs.db.types.ATOMIC_TYPES:
+            if key == ovs.db.types.VoidType:
                 continue
-            for value in types.ATOMIC_TYPES:
-                if value == types.VoidType:
+            for value in ovs.db.types.ATOMIC_TYPES:
+                if value == ovs.db.types.VoidType:
                     valueBase = None
                 else:
-                    valueBase = types.BaseType(value)
-                type_ = types.Type(types.BaseType(key), valueBase, n_min, 1)
+                    valueBase = ovs.db.types.BaseType(value)
+                type_ = ovs.db.types.Type(ovs.db.types.BaseType(key),
+                                          valueBase, n_min, 1)
                 assert type_.is_valid()
 
                 sys.stdout.write("key %s, value %s, n_min %d: "
@@ -80,110 +84,119 @@ def do_default_data():
 
 def do_parse_atomic_type(type_string):
     type_json = unbox_json(ovs.json.from_string(type_string))
-    atomic_type = types.AtomicType.from_json(type_json)
-    print ovs.json.to_string(atomic_type.to_json(), sort_keys=True)
+    atomic_type = ovs.db.types.AtomicType.from_json(type_json)
+    print(ovs.json.to_string(atomic_type.to_json(), sort_keys=True))
 
 
 def do_parse_base_type(type_string):
     type_json = unbox_json(ovs.json.from_string(type_string))
-    base_type = types.BaseType.from_json(type_json)
-    print ovs.json.to_string(base_type.to_json(), sort_keys=True)
+    base_type = ovs.db.types.BaseType.from_json(type_json)
+    print(ovs.json.to_string(base_type.to_json(), sort_keys=True))
 
 
 def do_parse_type(type_string):
     type_json = unbox_json(ovs.json.from_string(type_string))
-    type_ = types.Type.from_json(type_json)
-    print ovs.json.to_string(type_.to_json(), sort_keys=True)
+    type_ = ovs.db.types.Type.from_json(type_json)
+    print(ovs.json.to_string(type_.to_json(), sort_keys=True))
 
 
 def do_parse_atoms(type_string, *atom_strings):
     type_json = unbox_json(ovs.json.from_string(type_string))
-    base = types.BaseType.from_json(type_json)
+    base = ovs.db.types.BaseType.from_json(type_json)
     for atom_string in atom_strings:
         atom_json = unbox_json(ovs.json.from_string(atom_string))
         try:
             atom = data.Atom.from_json(base, atom_json)
-            print ovs.json.to_string(atom.to_json())
-        except error.Error, e:
-            print e.args[0].encode("utf8")
+            print(ovs.json.to_string(atom.to_json()))
+        except error.Error as e:
+            print(e.args[0])
 
 
 def do_parse_data(type_string, *data_strings):
     type_json = unbox_json(ovs.json.from_string(type_string))
-    type_ = types.Type.from_json(type_json)
+    type_ = ovs.db.types.Type.from_json(type_json)
     for datum_string in data_strings:
         datum_json = unbox_json(ovs.json.from_string(datum_string))
         datum = data.Datum.from_json(type_, datum_json)
-        print ovs.json.to_string(datum.to_json())
+        print(ovs.json.to_string(datum.to_json()))
 
 
 def do_sort_atoms(type_string, atom_strings):
     type_json = unbox_json(ovs.json.from_string(type_string))
-    base = types.BaseType.from_json(type_json)
+    base = ovs.db.types.BaseType.from_json(type_json)
     atoms = [data.Atom.from_json(base, atom_json)
              for atom_json in unbox_json(ovs.json.from_string(atom_strings))]
-    print ovs.json.to_string([data.Atom.to_json(atom)
-                              for atom in sorted(atoms)])
+    print(ovs.json.to_string([data.Atom.to_json(atom)
+                              for atom in sorted(atoms)]))
 
 
 def do_parse_column(name, column_string):
     column_json = unbox_json(ovs.json.from_string(column_string))
     column = ovs.db.schema.ColumnSchema.from_json(column_json, name)
-    print ovs.json.to_string(column.to_json(), sort_keys=True)
+    print(ovs.json.to_string(column.to_json(), sort_keys=True))
 
 
 def do_parse_table(name, table_string, default_is_root_string='false'):
     default_is_root = default_is_root_string == 'true'
     table_json = unbox_json(ovs.json.from_string(table_string))
     table = ovs.db.schema.TableSchema.from_json(table_json, name)
-    print ovs.json.to_string(table.to_json(default_is_root), sort_keys=True)
+    print(ovs.json.to_string(table.to_json(default_is_root), sort_keys=True))
 
 
 def do_parse_schema(schema_string):
     schema_json = unbox_json(ovs.json.from_string(schema_string))
     schema = ovs.db.schema.DbSchema.from_json(schema_json)
-    print ovs.json.to_string(schema.to_json(), sort_keys=True)
+    print(ovs.json.to_string(schema.to_json(), sort_keys=True))
 
 
 def print_idl(idl, step):
-    simple = idl.tables["simple"].rows
-    l1 = idl.tables["link1"].rows
-    l2 = idl.tables["link2"].rows
-
     n = 0
-    for row in simple.itervalues():
-        s = ("%03d: i=%s r=%s b=%s s=%s u=%s "
-             "ia=%s ra=%s ba=%s sa=%s ua=%s uuid=%s"
-             % (step, row.i, row.r, row.b, row.s, row.u,
-                row.ia, row.ra, row.ba, row.sa, row.ua, row.uuid))
-        s = re.sub('""|,|u?\'', "", s)
-        s = re.sub('UUID\(([^)]+)\)', r'\1', s)
-        s = re.sub('False', 'false', s)
-        s = re.sub('True', 'true', s)
-        s = re.sub(r'(ba)=([^[][^ ]*) ', r'\1=[\2] ', s)
-        print(s)
-        n += 1
+    if "simple" in idl.tables:
+        simple_columns = ["i", "r", "b", "s", "u", "ia",
+                          "ra", "ba", "sa", "ua", "uuid"]
+        simple = idl.tables["simple"].rows
+        for row in six.itervalues(simple):
+            s = "%03d:" % step
+            for column in simple_columns:
+                if hasattr(row, column) and not (type(getattr(row, column))
+                                                 is ovs.db.data.Atom):
+                    s += " %s=%s" % (column, getattr(row, column))
+            s = re.sub('""|,|u?\'', "", s)
+            s = re.sub('UUID\(([^)]+)\)', r'\1', s)
+            s = re.sub('False', 'false', s)
+            s = re.sub('True', 'true', s)
+            s = re.sub(r'(ba)=([^[][^ ]*) ', r'\1=[\2] ', s)
+            print(s)
+            n += 1
 
-    for row in l1.itervalues():
-        s = ["%03d: i=%s k=" % (step, row.i)]
-        if row.k:
-            s.append(str(row.k.i))
-        s.append(" ka=[")
-        s.append(' '.join(sorted(str(ka.i) for ka in row.ka)))
-        s.append("] l2=")
-        if row.l2:
-            s.append(str(row.l2[0].i))
-        s.append(" uuid=%s" % row.uuid)
-        print(''.join(s))
-        n += 1
+    if "link1" in idl.tables:
+        l1 = idl.tables["link1"].rows
+        for row in six.itervalues(l1):
+            s = ["%03d: i=%s k=" % (step, row.i)]
+            if hasattr(row, "k") and row.k:
+                s.append(str(row.k.i))
+            if hasattr(row, "ka"):
+                s.append(" ka=[")
+                s.append(' '.join(sorted(str(ka.i) for ka in row.ka)))
+                s.append("] l2=")
+            if hasattr(row, "l2") and row.l2:
+                s.append(str(row.l2[0].i))
+            if hasattr(row, "uuid"):
+                s.append(" uuid=%s" % row.uuid)
+            print(''.join(s))
+            n += 1
 
-    for row in l2.itervalues():
-        s = ["%03d: i=%s l1=" % (step, row.i)]
-        if row.l1:
-            s.append(str(row.l1[0].i))
-        s.append(" uuid=%s" % row.uuid)
-        print(''.join(s))
-        n += 1
+    if "link2" in idl.tables:
+        l2 = idl.tables["link2"].rows
+        for row in six.itervalues(l2):
+            s = ["%03d:" % step]
+            s.append(" i=%s l1=" % row.i)
+            if hasattr(row, "l1") and row.l1:
+                s.append(str(row.l1[0].i))
+            if hasattr(row, "uuid"):
+                s.append(" uuid=%s" % row.uuid)
+            print(''.join(s))
+            n += 1
 
     if not n:
         print("%03d: empty" % step)
@@ -191,7 +204,7 @@ def print_idl(idl, step):
 
 
 def substitute_uuids(json, symtab):
-    if type(json) in [str, unicode]:
+    if isinstance(json, six.string_types):
         symbol = symtab.get(json)
         if symbol:
             return str(symbol)
@@ -199,14 +212,15 @@ def substitute_uuids(json, symtab):
         return [substitute_uuids(element, symtab) for element in json]
     elif type(json) == dict:
         d = {}
-        for key, value in json.iteritems():
+        for key, value in six.iteritems(json):
             d[key] = substitute_uuids(value, symtab)
         return d
     return json
 
 
 def parse_uuids(json, symtab):
-    if type(json) in [str, unicode] and ovs.ovsuuid.is_valid_string(json):
+    if (isinstance(json, six.string_types)
+            and ovs.ovsuuid.is_valid_string(json)):
         name = "#%d#" % len(symtab)
         sys.stderr.write("%s = %s\n" % (name, json))
         symtab[name] = json
@@ -214,12 +228,12 @@ def parse_uuids(json, symtab):
         for element in json:
             parse_uuids(element, symtab)
     elif type(json) == dict:
-        for value in json.itervalues():
+        for value in six.itervalues(json):
             parse_uuids(value, symtab)
 
 
 def idltest_find_simple(idl, i):
-    for row in idl.tables["simple"].rows.itervalues():
+    for row in six.itervalues(idl.tables["simple"].rows):
         if row.i == i:
             return row
     return None
@@ -228,6 +242,7 @@ def idltest_find_simple(idl, i):
 def idl_set(idl, commands, step):
     txn = ovs.db.idl.Transaction(idl)
     increment = False
+    fetch_cmds = []
     events = []
     for command in commands.split(','):
         words = command.split()
@@ -241,7 +256,7 @@ def idl_set(idl, commands, step):
 
             def notify(event, row, updates=None):
                 if updates:
-                    upcol = updates._data.keys()[0]
+                    upcol = list(updates._data.keys())[0]
                 else:
                     upcol = None
                 events.append("%s|%s|%s" % (event, row.i, upcol))
@@ -307,6 +322,20 @@ def idl_set(idl, commands, step):
                 sys.stderr.write('"verify" command asks for unknown column '
                                  '"%s"\n' % args[1])
                 sys.exit(1)
+        elif name == "fetch":
+            if len(args) != 2:
+                sys.stderr.write('"fetch" command requires 2 argument\n')
+                sys.exit(1)
+
+            row = idltest_find_simple(idl, int(args[0]))
+            if not row:
+                sys.stderr.write('"fetch" command asks for nonexistent i=%d\n'
+                                 % int(args[0]))
+                sys.exit(1)
+
+            column = args[1]
+            row.fetch(column)
+            fetch_cmds.append([row, column])
         elif name == "increment":
             if len(args) != 1:
                 sys.stderr.write('"increment" command requires 1 argument\n')
@@ -324,7 +353,7 @@ def idl_set(idl, commands, step):
             txn.abort()
             break
         elif name == "destroy":
-            print "%03d: destroy" % step
+            print("%03d: destroy" % step)
             sys.stdout.flush()
             txn.abort()
             return
@@ -362,14 +391,41 @@ def idl_set(idl, commands, step):
     sys.stdout.flush()
 
 
+def update_condition(idl, commands):
+    commands = commands.split(";")
+    for command in commands:
+        command = command[len("condition "):]
+        if "add" in command:
+            add_cmd = True
+            command = command[len("add "):]
+        else:
+            add_cmd = False
+            command = command[len("remove "):]
+
+        command = command.split(" ")
+        if(len(command) != 2):
+            sys.stderr.write("Error parsong condition %s\n" % command)
+            sys.exit(1)
+
+        table = command[0]
+        cond = ovs.json.from_string(command[1])
+
+        idl.cond_change(table, add_cmd, cond)
+
+
 def do_idl(schema_file, remote, *commands):
     schema_helper = ovs.db.idl.SchemaHelper(schema_file)
     if commands and commands[0].startswith("?"):
-        monitor = {}
+        readonly = {}
         for x in commands[0][1:].split("?"):
+            readonly = []
             table, columns = x.split(":")
-            monitor[table] = columns.split(",")
-            schema_helper.register_columns(table, monitor[table])
+            columns = columns.split(",")
+            for index, column in enumerate(columns):
+                if column[-1] == '!':
+                    columns[index] = columns[index][:-1]
+                    readonly.append(columns[index])
+            schema_helper.register_columns(table, columns, readonly)
         commands = commands[1:]
     else:
         schema_helper.register_all()
@@ -388,6 +444,14 @@ def do_idl(schema_file, remote, *commands):
     symtab = {}
     seqno = 0
     step = 0
+
+    commands = list(commands)
+    if len(commands) >= 1 and "condition" in commands[0]:
+        update_condition(idl, commands.pop(0))
+        sys.stdout.write("%03d: change conditions\n" % step)
+        sys.stdout.flush()
+        step += 1
+
     for command in commands:
         if command.startswith("+"):
             # The previous transaction didn't change anything.
@@ -412,12 +476,17 @@ def do_idl(schema_file, remote, *commands):
             sys.stdout.flush()
             step += 1
             idl.force_reconnect()
+        elif "condition" in command:
+            update_condition(idl, command)
+            sys.stdout.write("%03d: change conditions\n" % step)
+            sys.stdout.flush()
+            step += 1
         elif not command.startswith("["):
             idl_set(idl, command, step)
             step += 1
         else:
             json = ovs.json.from_string(command)
-            if type(json) in [str, unicode]:
+            if isinstance(json, six.string_types):
                 sys.stderr.write("\"%s\": %s\n" % (command, json))
                 sys.exit(1)
             json = substitute_uuids(json, symtab)
@@ -453,8 +522,53 @@ def do_idl(schema_file, remote, *commands):
     print("%03d: done" % step)
 
 
+def do_idl_passive(schema_file, remote, *commands):
+    symtab = {}
+    step = 0
+    schema_helper = ovs.db.idl.SchemaHelper(schema_file)
+    schema_helper.register_all()
+    idl = ovs.db.idl.Idl(remote, schema_helper)
+
+    while idl._session.rpc is None:
+        idl.run()
+
+    rpc = idl._session.rpc
+
+    print_idl(idl, step)
+    step += 1
+
+    for command in commands:
+        json = ovs.json.from_string(command)
+        if isinstance(json, six.string_types):
+            sys.stderr.write("\"%s\": %s\n" % (command, json))
+            sys.exit(1)
+        json = substitute_uuids(json, symtab)
+        request = ovs.jsonrpc.Message.create_request("transact", json)
+        error, reply = rpc.transact_block(request)
+        if error:
+            sys.stderr.write("jsonrpc transaction failed: %s"
+                             % os.strerror(error))
+            sys.exit(1)
+        elif reply.error is not None:
+            sys.stderr.write("jsonrpc transaction failed: %s"
+                             % reply.error)
+            sys.exit(1)
+
+        sys.stdout.write("%03d: " % step)
+        sys.stdout.flush()
+        step += 1
+        if reply.result is not None:
+            parse_uuids(reply.result, symtab)
+        reply.id = None
+        sys.stdout.write("%s\n" % ovs.json.to_string(reply.to_json()))
+        sys.stdout.flush()
+
+    idl.close()
+    print("%03d: done" % step)
+
+
 def usage():
-    print """\
+    print("""\
 %(program_name)s: test utility for Open vSwitch database Python bindings
 usage: %(program_name)s [OPTIONS] COMMAND ARG...
 
@@ -499,11 +613,17 @@ idl SCHEMA SERVER [?T1:C1,C2...[?T2:C1,C2,...]...] [TRANSACTION...]
   e.g.:
       ?simple:b?link1:i,k - Monitor column "b" in table "simple",
                             and column "i", "k" in table "link1"
+  Readonly columns: Suffixing a "!" after a column indicates that the
+  column is to be registered "readonly".
+  e.g.:
+      ?simple:i,b!  - Register interest in column "i" (monitoring) and
+                      column "b" (readonly).
+
 
 The following options are also available:
   -t, --timeout=SECS          give up after SECS seconds
   -h, --help                  display this help message\
-""" % {'program_name': ovs.util.PROGRAM_NAME}
+""" % {'program_name': ovs.util.PROGRAM_NAME})
     sys.exit(0)
 
 
@@ -512,7 +632,7 @@ def main(argv):
         options, args = getopt.gnu_getopt(argv[1:], 't:h',
                                           ['timeout',
                                            'help'])
-    except getopt.GetoptError, geo:
+    except getopt.GetoptError as geo:
         sys.stderr.write("%s: %s\n" % (ovs.util.PROGRAM_NAME, geo.msg))
         sys.exit(1)
 
@@ -547,11 +667,12 @@ def main(argv):
                 "parse-column": (do_parse_column, 2),
                 "parse-table": (do_parse_table, (2, 3)),
                 "parse-schema": (do_parse_schema, 1),
-                "idl": (do_idl, (2,))}
+                "idl": (do_idl, (2,)),
+                "idl_passive": (do_idl_passive, (2,))}
 
     command_name = args[0]
     args = args[1:]
-    if not command_name in commands:
+    if command_name not in commands:
         sys.stderr.write("%s: unknown command \"%s\" "
                          "(use --help for help)\n" % (ovs.util.PROGRAM_NAME,
                                                       command_name))
@@ -581,6 +702,6 @@ def main(argv):
 if __name__ == '__main__':
     try:
         main(sys.argv)
-    except error.Error, e:
+    except error.Error as e:
         sys.stderr.write("%s\n" % e)
         sys.exit(1)

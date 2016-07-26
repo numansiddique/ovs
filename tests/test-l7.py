@@ -37,6 +37,10 @@ def get_ftpd():
         class OVSFTPHandler(FTPHandler):
             authorizer = DummyAuthorizer()
             authorizer.add_anonymous("/tmp")
+            # Hack around a bug in pyftpdlib, which rejects EPRT
+            # connection due to mismatching textual representation of
+            # the IPv6 address.
+            permit_foreign_addresses = True
         server = [FTPServer, OVSFTPHandler, 21]
     except ImportError:
         server = None
@@ -46,7 +50,7 @@ def get_ftpd():
 
 def main():
     SERVERS = {
-        'http':  [TCPServer,   SimpleHTTPRequestHandler, 80],
+        'http': [TCPServer, SimpleHTTPRequestHandler, 80],
         'http6': [TCPServerV6, SimpleHTTPRequestHandler, 80],
     }
 

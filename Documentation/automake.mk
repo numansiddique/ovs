@@ -1,2 +1,5 @@
-EXTRA_DIST += \
-	Documentation/group-selection-method-property.txt
+docs += \
+	Documentation/committer-responsibilities.md \
+	Documentation/committer-grant-revocation.md \
+	Documentation/group-selection-method-property.txt \
+	Documentation/OVSDB-replication.md

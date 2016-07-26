@@ -1,4 +1,4 @@
-# Copyright (C) 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+# Copyright (C) 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
 #
 # Copying and distribution of this file, with or without modification,
 # are permitted in any medium without royalty provided the copyright
@@ -38,8 +38,12 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/classifier.c \
 	lib/classifier.h \
 	lib/classifier-private.h \
+	lib/ccmap.c \
+	lib/ccmap.h \
 	lib/cmap.c \
 	lib/cmap.h \
+	lib/colors.c \
+	lib/colors.h \
 	lib/command-line.c \
 	lib/command-line.h \
 	lib/compiler.h \
@@ -51,6 +55,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/crc32c.h \
 	lib/csum.c \
 	lib/csum.h \
+	lib/ct-dpif.c \
+	lib/ct-dpif.h \
 	lib/daemon.c \
 	lib/daemon.h \
 	lib/daemon-private.h \
@@ -73,7 +79,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/heap.c \
 	lib/heap.h \
 	lib/dynamic-string.c \
-	lib/dynamic-string.h \
 	lib/entropy.c \
 	lib/entropy.h \
 	lib/fat-rwlock.c \
@@ -82,7 +87,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/fatal-signal.h \
 	lib/flow.c \
 	lib/flow.h \
-	lib/geneve.h \
 	lib/guarded-list.c \
 	lib/guarded-list.h \
 	lib/hash.c \
@@ -90,7 +94,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/hindex.c \
 	lib/hindex.h \
 	lib/hmap.c \
-	lib/hmap.h \
 	lib/hmapx.c \
 	lib/hmapx.h \
 	lib/id-pool.c \
@@ -98,7 +101,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/jhash.c \
 	lib/jhash.h \
 	lib/json.c \
-	lib/json.h \
 	lib/jsonrpc.c \
 	lib/jsonrpc.h \
 	lib/lacp.c \
@@ -108,25 +110,23 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/learn.h \
 	lib/learning-switch.c \
 	lib/learning-switch.h \
-	lib/list.h \
 	lib/lockfile.c \
 	lib/lockfile.h \
 	lib/mac-learning.c \
 	lib/mac-learning.h \
 	lib/match.c \
-	lib/match.h \
 	lib/mcast-snooping.c \
 	lib/mcast-snooping.h \
 	lib/memory.c \
 	lib/memory.h \
 	lib/meta-flow.c \
-	lib/meta-flow.h \
 	lib/multipath.c \
 	lib/multipath.h \
 	lib/netdev-dummy.c \
 	lib/netdev-provider.h \
 	lib/netdev-vport.c \
 	lib/netdev-vport.h \
+	lib/netdev-vport-private.h \
 	lib/netdev.c \
 	lib/netdev.h \
 	lib/netflow.h \
@@ -139,21 +139,15 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/odp-util.c \
 	lib/odp-util.h \
 	lib/ofp-actions.c \
-	lib/ofp-actions.h \
 	lib/ofp-errors.c \
-	lib/ofp-errors.h \
 	lib/ofp-msgs.c \
-	lib/ofp-msgs.h \
 	lib/ofp-parse.c \
-	lib/ofp-parse.h \
 	lib/ofp-print.c \
-	lib/ofp-print.h \
+	lib/ofp-prop.c \
 	lib/ofp-util.c \
-	lib/ofp-util.h \
 	lib/ofp-version-opt.h \
 	lib/ofp-version-opt.c \
 	lib/ofpbuf.c \
-	lib/ofpbuf.h \
 	lib/ovs-atomic-c11.h \
 	lib/ovs-atomic-clang.h \
 	lib/ovs-atomic-flag-gcc4.7+.h \
@@ -168,6 +162,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/ovs-atomic.h \
 	lib/ovs-lldp.c \
 	lib/ovs-lldp.h \
+	lib/ovs-numa.c \
+	lib/ovs-numa.h \
 	lib/ovs-rcu.c \
 	lib/ovs-rcu.h \
 	lib/ovs-router.h \
@@ -181,6 +177,10 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/ovsdb-idl-provider.h \
 	lib/ovsdb-idl.c \
 	lib/ovsdb-idl.h \
+	lib/ovsdb-map-op.c \
+	lib/ovsdb-map-op.h \
+	lib/ovsdb-condition.h \
+	lib/ovsdb-condition.c \
 	lib/ovsdb-parser.c \
 	lib/ovsdb-parser.h \
 	lib/ovsdb-types.c \
@@ -191,6 +191,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/pcap-file.h \
 	lib/perf-counter.h \
 	lib/perf-counter.c \
+	lib/pktbuf.c \
+	lib/pktbuf.h \
 	lib/poll-loop.c \
 	lib/poll-loop.h \
 	lib/process.c \
@@ -215,7 +217,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/sha1.c \
 	lib/sha1.h \
 	lib/shash.c \
-	lib/shash.h \
 	lib/simap.c \
 	lib/simap.h \
 	lib/smap.c \
@@ -250,14 +251,15 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/timer.h \
 	lib/timeval.c \
 	lib/timeval.h \
-	lib/tnl-arp-cache.c \
-	lib/tnl-arp-cache.h \
+	lib/tnl-neigh-cache.c \
+	lib/tnl-neigh-cache.h \
 	lib/tnl-ports.c \
 	lib/tnl-ports.h \
+	lib/netdev-native-tnl.c \
+	lib/netdev-native-tnl.h \
 	lib/token-bucket.c \
 	lib/tun-metadata.c \
 	lib/tun-metadata.h \
-	lib/type-props.h \
 	lib/unaligned.h \
 	lib/unicode.c \
 	lib/unicode.h \
@@ -273,8 +275,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/vconn.c \
 	lib/vlan-bitmap.c \
 	lib/vlan-bitmap.h \
-	lib/vlandev.c \
-	lib/vlandev.h \
 	lib/vlog.c \
 	lib/lldp/aa-structs.h \
 	lib/lldp/lldp.c \
@@ -343,13 +343,13 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/if-notifier.h \
 	lib/netdev-linux.c \
 	lib/netdev-linux.h \
+	lib/netlink-conntrack.c \
+	lib/netlink-conntrack.h \
 	lib/netlink-notifier.c \
 	lib/netlink-notifier.h \
 	lib/netlink-protocol.h \
 	lib/netlink-socket.c \
 	lib/netlink-socket.h \
-	lib/ovs-numa.c \
-	lib/ovs-numa.h \
 	lib/rtnetlink.c \
 	lib/rtnetlink.h \
 	lib/route-table.c \
@@ -360,6 +360,10 @@ if DPDK_NETDEV
 lib_libopenvswitch_la_SOURCES += \
        lib/netdev-dpdk.c \
        lib/netdev-dpdk.h
+else
+lib_libopenvswitch_la_SOURCES += \
+	lib/netdev-nodpdk.c \
+	lib/netdev-dpdk.h
 endif
 
 if WIN32
@@ -367,6 +371,8 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/dpif-netlink.c \
 	lib/dpif-netlink.h \
 	lib/netdev-windows.c \
+	lib/netlink-conntrack.c \
+	lib/netlink-conntrack.h \
 	lib/netlink-notifier.c \
 	lib/netlink-notifier.h \
 	lib/netlink-protocol.h \
@@ -417,9 +423,11 @@ EXTRA_DIST += \
 	lib/dh1024.pem \
 	lib/dh2048.pem \
 	lib/dh4096.pem \
-	lib/dirs.c.in
+	lib/dirs.c.in \
+	lib/db-ctl-base.xml
 
 MAN_FRAGMENTS += \
+	lib/colors.man \
 	lib/common.man \
 	lib/common-syn.man \
 	lib/coverage-unixctl.man \
@@ -466,10 +474,10 @@ lib/dirs.c: lib/dirs.c.in Makefile
 	     > lib/dirs.c.tmp && \
 	mv lib/dirs.c.tmp lib/dirs.c
 
-lib/meta-flow.inc: $(srcdir)/build-aux/extract-ofp-fields lib/meta-flow.h
+lib/meta-flow.inc: $(srcdir)/build-aux/extract-ofp-fields include/openvswitch/meta-flow.h
 	$(AM_V_GEN)$(run_python) $^ --meta-flow > $@.tmp && mv $@.tmp $@
 lib/meta-flow.lo: lib/meta-flow.inc
-lib/nx-match.inc: $(srcdir)/build-aux/extract-ofp-fields lib/meta-flow.h
+lib/nx-match.inc: $(srcdir)/build-aux/extract-ofp-fields include/openvswitch/meta-flow.h
 	$(AM_V_GEN)$(run_python) $^ --nx-match > $@.tmp && mv $@.tmp $@
 lib/nx-match.lo: lib/nx-match.inc
 CLEANFILES += lib/meta-flow.inc lib/nx-match.inc
@@ -483,19 +491,19 @@ lib/ofp-actions.lo: lib/ofp-actions.inc1 lib/ofp-actions.inc2
 CLEANFILES += lib/ofp-actions.inc1 lib/ofp-actions.inc2
 EXTRA_DIST += build-aux/extract-ofp-actions
 
-lib/ofp-errors.inc: lib/ofp-errors.h include/openflow/openflow-common.h \
+lib/ofp-errors.inc: include/openvswitch/ofp-errors.h include/openflow/openflow-common.h \
 	$(srcdir)/build-aux/extract-ofp-errors
 	$(AM_V_GEN)$(run_python) $(srcdir)/build-aux/extract-ofp-errors \
-		$(srcdir)/lib/ofp-errors.h \
+		$(srcdir)/include/openvswitch/ofp-errors.h \
 		$(srcdir)/include/openflow/openflow-common.h > $@.tmp && \
 	mv $@.tmp $@
 lib/ofp-errors.lo: lib/ofp-errors.inc
 CLEANFILES += lib/ofp-errors.inc
 EXTRA_DIST += build-aux/extract-ofp-errors
 
-lib/ofp-msgs.inc: lib/ofp-msgs.h $(srcdir)/build-aux/extract-ofp-msgs
+lib/ofp-msgs.inc: include/openvswitch/ofp-msgs.h $(srcdir)/build-aux/extract-ofp-msgs
 	$(AM_V_GEN)$(run_python) $(srcdir)/build-aux/extract-ofp-msgs \
-		$(srcdir)/lib/ofp-msgs.h $@ > $@.tmp && mv $@.tmp $@
+		$(srcdir)/include/openvswitch/ofp-msgs.h $@ > $@.tmp && mv $@.tmp $@
 lib/ofp-msgs.lo: lib/ofp-msgs.inc
 CLEANFILES += lib/ofp-msgs.inc
 EXTRA_DIST += build-aux/extract-ofp-msgs
@@ -506,4 +514,3 @@ lib-install-data-local:
 	$(MKDIR_P) $(DESTDIR)$(PKIDIR)
 	$(MKDIR_P) $(DESTDIR)$(LOGDIR)
 	$(MKDIR_P) $(DESTDIR)$(DBDIR)
-

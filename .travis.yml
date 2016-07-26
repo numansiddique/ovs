@@ -3,15 +3,21 @@ compiler:
   - gcc
   - clang
 
+os:
+  - linux
+
 addons:
   apt:
     packages:
       - bc
       - gcc-multilib
+      - libnuma-dev
       - libssl-dev
       - llvm-dev
+      - libjemalloc1
+      - libjemalloc-dev
 
-before_install: ./.travis/prepare.sh
+before_install: ./.travis/${TRAVIS_OS_NAME}-prepare.sh
 
 before_script: export PATH=$PATH:$HOME/bin
 
@@ -24,17 +30,21 @@ env:
   - BUILD_ENV="-m32" OPTS="--disable-ssl"
   - KERNEL=3.17.7 DPDK=1
   - KERNEL=3.17.7 DPDK=1 OPTS="--enable-shared"
-  - KERNEL=4.2.5
-  - KERNEL=4.1.12
-  - KERNEL=3.18.23
-  - KERNEL=3.14.56
-  - KERNEL=3.12.49
-  - KERNEL=3.10.92
-  - KERNEL=3.4.110
-  - KERNEL=3.2.72
-  - KERNEL=2.6.32.68
+  - KERNEL=4.3.5
+  - KERNEL=4.1.17
+  - KERNEL=3.18.26
+  - KERNEL=3.14.60
+  - KERNEL=3.12.53
+  - KERNEL=3.10.96
+  - TESTSUITE=1 LIBS=-ljemalloc
 
-script: ./.travis/build.sh $OPTS
+matrix:
+  include:
+    - os: osx
+      compiler: clang
+      env: OPTS="--disable-ssl"
+
+script: ./.travis/${TRAVIS_OS_NAME}-build.sh $OPTS
 
 notifications:
   email:

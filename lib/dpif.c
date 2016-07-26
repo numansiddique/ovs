@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,28 +27,28 @@
 #include "dpctl.h"
 #include "dp-packet.h"
 #include "dpif-netdev.h"
-#include "dynamic-string.h"
+#include "openvswitch/dynamic-string.h"
 #include "flow.h"
 #include "netdev.h"
 #include "netlink.h"
 #include "odp-execute.h"
 #include "odp-util.h"
-#include "ofp-errors.h"
-#include "ofp-print.h"
-#include "ofp-util.h"
-#include "ofpbuf.h"
+#include "openvswitch/ofp-print.h"
+#include "openvswitch/ofp-util.h"
+#include "openvswitch/ofpbuf.h"
 #include "packets.h"
 #include "poll-loop.h"
 #include "route-table.h"
 #include "seq.h"
-#include "shash.h"
+#include "openvswitch/shash.h"
 #include "sset.h"
 #include "timeval.h"
-#include "tnl-arp-cache.h"
+#include "tnl-neigh-cache.h"
 #include "tnl-ports.h"
 #include "util.h"
 #include "uuid.h"
 #include "valgrind.h"
+#include "openvswitch/ofp-errors.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(dpif);
@@ -122,7 +122,7 @@ dp_initialize(void)
         tnl_conf_seq = seq_create();
         dpctl_unixctl_register();
         tnl_port_map_init();
-        tnl_arp_cache_init();
+        tnl_neigh_cache_init();
         route_table_init();
 
         for (i = 0; i < ARRAY_SIZE(base_dpif_classes); i++) {
@@ -192,8 +192,6 @@ dp_unregister_provider__(const char *type)
 
     node = shash_find(&dpif_classes, type);
     if (!node) {
-        VLOG_WARN("attempted to unregister a datapath provider that is not "
-                  "registered: %s", type);
         return EAFNOSUPPORT;
     }
 
@@ -903,7 +901,7 @@ dpif_probe_feature(struct dpif *dpif, const char *name,
                           PMD_ID_NULL, &reply, &flow);
     if (!error
         && (!ufid || (flow.ufid_present
-                      && ovs_u128_equals(ufid, &flow.ufid)))) {
+                      && ovs_u128_equals(*ufid, flow.ufid)))) {
         enable_feature = true;
     }
 
@@ -1081,20 +1079,22 @@ dpif_flow_dump_next(struct dpif_flow_dump_thread *thread,
 
 struct dpif_execute_helper_aux {
     struct dpif *dpif;
+    const struct flow *flow;
     int error;
 };
 
 /* This is called for actions that need the context of the datapath to be
  * meaningful. */
 static void
-dpif_execute_helper_cb(void *aux_, struct dp_packet **packets, int cnt,
+dpif_execute_helper_cb(void *aux_, struct dp_packet_batch *packets_,
                        const struct nlattr *action, bool may_steal OVS_UNUSED)
 {
     struct dpif_execute_helper_aux *aux = aux_;
     int type = nl_attr_type(action);
-    struct dp_packet *packet = *packets;
+    struct dp_packet *packet = packets_->packets[0];
+    struct dp_packet *trunc_packet = NULL, *orig_packet;
 
-    ovs_assert(cnt == 1);
+    ovs_assert(packets_->count == 1);
 
     switch ((enum ovs_action_attr)type) {
     case OVS_ACTION_ATTR_CT:
@@ -1107,8 +1107,11 @@ dpif_execute_helper_cb(void *aux_, struct dp_packet **packets, int cnt,
         struct ofpbuf execute_actions;
         uint64_t stub[256 / 8];
         struct pkt_metadata *md = &packet->md;
+        bool dst_set, clone = false;
+        uint32_t cutlen = dp_packet_get_cutlen(packet);
 
-        if (md->tunnel.ip_dst) {
+        dst_set = flow_tnl_dst_is_set(&md->tunnel);
+        if (dst_set) {
             /* The Linux kernel datapath throws away the tunnel information
              * that we supply as metadata.  We have to use a "set" action to
              * supply it. */
@@ -1123,15 +1126,36 @@ dpif_execute_helper_cb(void *aux_, struct dp_packet **packets, int cnt,
             execute.actions_len = NLA_ALIGN(action->nla_len);
         }
 
+        orig_packet = packet;
+
+        if (cutlen > 0 && (type == OVS_ACTION_ATTR_OUTPUT ||
+            type == OVS_ACTION_ATTR_TUNNEL_PUSH ||
+            type == OVS_ACTION_ATTR_TUNNEL_POP ||
+            type == OVS_ACTION_ATTR_USERSPACE)) {
+            if (!may_steal) {
+                trunc_packet = dp_packet_clone(packet);
+                packet = trunc_packet;
+                clone = true;
+            }
+
+            dp_packet_set_size(packet, dp_packet_size(packet) - cutlen);
+            dp_packet_reset_cutlen(orig_packet);
+        }
+
         execute.packet = packet;
+        execute.flow = aux->flow;
         execute.needs_help = false;
         execute.probe = false;
         execute.mtu = 0;
         aux->error = dpif_execute(aux->dpif, &execute);
         log_execute_message(aux->dpif, &execute, true, aux->error);
 
-        if (md->tunnel.ip_dst) {
+        if (dst_set) {
             ofpbuf_uninit(&execute_actions);
+        }
+
+        if (clone) {
+            dp_packet_delete(trunc_packet);
         }
         break;
     }
@@ -1144,6 +1168,7 @@ dpif_execute_helper_cb(void *aux_, struct dp_packet **packets, int cnt,
     case OVS_ACTION_ATTR_SET:
     case OVS_ACTION_ATTR_SET_MASKED:
     case OVS_ACTION_ATTR_SAMPLE:
+    case OVS_ACTION_ATTR_TRUNC:
     case OVS_ACTION_ATTR_UNSPEC:
     case __OVS_ACTION_ATTR_MAX:
         OVS_NOT_REACHED();
@@ -1158,13 +1183,13 @@ dpif_execute_helper_cb(void *aux_, struct dp_packet **packets, int cnt,
 static int
 dpif_execute_with_help(struct dpif *dpif, struct dpif_execute *execute)
 {
-    struct dpif_execute_helper_aux aux = {dpif, 0};
-    struct dp_packet *pp;
+    struct dpif_execute_helper_aux aux = {dpif, execute->flow, 0};
+    struct dp_packet_batch pb;
 
     COVERAGE_INC(dpif_execute_with_help);
 
-    pp = execute->packet;
-    odp_execute_actions(&aux, &pp, 1, false, execute->actions,
+    packet_batch_init_packet(&pb, execute->packet);
+    odp_execute_actions(&aux, &pb, false, execute->actions,
                         execute->actions_len, dpif_execute_helper_cb);
     return aux.error;
 }
@@ -1404,13 +1429,12 @@ dpif_print_packet(struct dpif *dpif, struct dpif_upcall *upcall)
 /* If 'dpif' creates its own I/O polling threads, refreshes poll threads
  * configuration. */
 int
-dpif_poll_threads_set(struct dpif *dpif, unsigned int n_rxqs,
-                      const char *cmask)
+dpif_poll_threads_set(struct dpif *dpif, const char *cmask)
 {
     int error = 0;
 
     if (dpif->dpif_class->poll_threads_set) {
-        error = dpif->dpif_class->poll_threads_set(dpif, n_rxqs, cmask);
+        error = dpif->dpif_class->poll_threads_set(dpif, cmask);
         if (error) {
             log_operation(dpif, "poll_threads_set", error);
         }
@@ -1582,7 +1606,7 @@ flow_message_log_level(int error)
 static bool
 should_log_flow_message(int error)
 {
-    return !vlog_should_drop(THIS_MODULE, flow_message_log_level(error),
+    return !vlog_should_drop(&this_module, flow_message_log_level(error),
                              error ? &error_rl : &dpmsg_rl);
 }
 
@@ -1615,7 +1639,7 @@ log_flow_message(const struct dpif *dpif, int error, const char *operation,
         ds_put_cstr(&ds, ", actions:");
         format_odp_actions(&ds, actions, actions_len);
     }
-    vlog(THIS_MODULE, flow_message_log_level(error), "%s", ds_cstr(&ds));
+    vlog(&this_module, flow_message_log_level(error), "%s", ds_cstr(&ds));
     ds_destroy(&ds);
 }
 
@@ -1695,7 +1719,7 @@ log_execute_message(struct dpif *dpif, const struct dpif_execute *execute,
         }
         ds_put_format(&ds, " on packet %s", packet);
         ds_put_format(&ds, " mtu %d", execute->mtu);
-        vlog(THIS_MODULE, error ? VLL_WARN : VLL_DBG, "%s", ds_cstr(&ds));
+        vlog(&this_module, error ? VLL_WARN : VLL_DBG, "%s", ds_cstr(&ds));
         ds_destroy(&ds);
         free(packet);
     }

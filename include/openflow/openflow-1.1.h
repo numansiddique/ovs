@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2011, 2012, 2013, 2014 The Board of Trustees of The Leland Stanford
+/* Copyright (c) 2008, 2011, 2012, 2013, 2014, 2016 The Board of Trustees of The Leland Stanford
  * Junior University
  *
  * We are making the OpenFlow specification and associated documentation
@@ -172,6 +172,7 @@ enum ofp11_group_mod_command {
     OFPGC11_ADD,          /* New group. */
     OFPGC11_MODIFY,       /* Modify all matching groups. */
     OFPGC11_DELETE,       /* Delete all matching groups. */
+    OFPGC11_ADD_OR_MOD = 0x8000, /* Create new or modify existing group. */
 };
 
 /* OpenFlow 1.1 specific capabilities supported by the datapath (struct
@@ -336,7 +337,7 @@ struct ofp11_flow_mod {
                                     indicates no restriction. */
     ovs_be32 out_group;          /* For OFPFC_DELETE* commands, require
                                     matching entries to include this as an
-                                    output group. A value of OFPG11_ANY
+                                    output group. A value of OFPG_ANY
                                     indicates no restriction. */
     ovs_be16 flags;              /* One of OFPFF_*. */
     ovs_be16 importance;         /* Eviction precedence (OF1.4+). */
@@ -352,20 +353,6 @@ enum ofp11_group_type {
     OFPGT11_SELECT,   /* Select group. */
     OFPGT11_INDIRECT, /* Indirect group. */
     OFPGT11_FF        /* Fast failover group. */
-};
-
-/* Group numbering. Groups can use any number up to OFPG_MAX. */
-enum ofp11_group {
-    /* Last usable group number. */
-    OFPG11_MAX        = 0xffffff00,
-
-    /* Fake groups. */
-    OFPG11_ALL        = 0xfffffffc,  /* Represents all groups for group delete
-                                        commands. */
-    OFPG11_ANY        = 0xffffffff   /* Wildcard group used only for flow stats
-                                        requests. Selects all flows regardless
-                                        of group (including flows with no
-                                        group). */
 };
 
 /* Bucket for use in groups. */
@@ -396,26 +383,6 @@ struct ofp11_queue_get_config_reply {
 };
 OFP_ASSERT(sizeof(struct ofp11_queue_get_config_reply) == 8);
 
-struct ofp11_stats_msg {
-    struct ofp_header header;
-    ovs_be16 type;              /* One of the OFPST_* constants. */
-    ovs_be16 flags;             /* OFPSF_REQ_* flags (none yet defined). */
-    uint8_t pad[4];
-    /* Followed by the body of the request. */
-};
-OFP_ASSERT(sizeof(struct ofp11_stats_msg) == 16);
-
-/* Vendor extension stats message. */
-struct ofp11_vendor_stats_msg {
-    struct ofp11_stats_msg osm; /* Type OFPST_VENDOR. */
-    ovs_be32 vendor;            /* Vendor ID:
-                                 * - MSB 0: low-order bytes are IEEE OUI.
-                                 * - MSB != 0: defined by OpenFlow
-                                 *   consortium. */
-    /* Followed by vendor-defined arbitrary additional data. */
-};
-OFP_ASSERT(sizeof(struct ofp11_vendor_stats_msg) == 20);
-
 /* Stats request of type OFPST_FLOW. */
 struct ofp11_flow_stats_request {
     uint8_t table_id;         /* ID of table to read (from ofp_table_stats),
@@ -425,7 +392,7 @@ struct ofp11_flow_stats_request {
                                  as an output port. A value of OFPP_ANY
                                  indicates no restriction. */
     ovs_be32 out_group;       /* Require matching entries to include this
-                                 as an output group. A value of OFPG11_ANY
+                                 as an output group. A value of OFPG_ANY
                                  indicates no restriction. */
     uint8_t pad2[4];          /* Align to 64 bits. */
     ovs_be64 cookie;          /* Require matching entries to contain this

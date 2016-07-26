@@ -19,7 +19,9 @@
 
 #include "precomp.h"
 #include "Ethernet.h"
+#include "Mpls.h"
 
+#define ETH_HEADER_LENGTH  14
 #define ETH_ADDR_LENGTH    6
 /*
  * There is a more inclusive definition of ethernet header (Eth_Header) in
@@ -37,9 +39,13 @@ typedef struct EthHdr {
 #define IP_HDR_MIN_LENGTH      20
 #define TCP_HDR_MIN_LENGTH     20
 #define TCP_CSUM_OFFSET        16
+#define UDP_HDR_MIN_LENGTH     8
 #define UDP_CSUM_OFFSET        6
+#define ICMP_HDR_MIN_LENGTH    8
 #define ICMP_CSUM_OFFSET       2
 #define INET_CSUM_LENGTH       (sizeof(UINT16))
+
+#define PACKET_MAX_LENGTH      64*1024 // 64K
 
 #define IP4_UNITS_TO_BYTES(x) ((x) << 2)
 #define IP4_BYTES_TO_UNITS(x) ((x) >> 2)
@@ -82,6 +88,7 @@ typedef UINT64 IP6UnitLength;
 #define IPPROTO_UDP     17
 #define IPPROTO_GRE     47
 #define IPPROTO_TCP     6
+#define IPPROTO_SCTP    132
 #define IPPROTO_RSVD    0xff
 
 #define IPPROTO_HOPOPTS         0               /* Hop-by-hop option header */
@@ -95,10 +102,6 @@ typedef UINT64 IP6UnitLength;
 #define IPPROTO_NONE            59              /* No next header */
 #define IPPROTO_DSTOPTS         60              /* Destination options header */
 #define IPPROTO_ETHERIP         97              /* etherIp tunneled protocol */
-
-/* ICMPv6 types. */
-#define ND_NEIGHBOR_SOLICIT 135     /* neighbor solicitation */
-#define ND_NEIGHBOR_ADVERT  136     /* neighbor advertisment */
 
 /* IPv6 Neighbor discovery option header. */
 #define ND_OPT_SOURCE_LINKADDR  1
@@ -118,9 +121,39 @@ typedef UINT64 IP6UnitLength;
 #define RARPOP_REQUEST_NBO 0x0300       /* NBO RARP request.  */
 #define RARPOP_REPLY_NBO   0x0300       /* NBO RARP reply.    */
 
-#define ICMP_ECHO          8    /* Echo Request */
-#define ICMP_ECHOREPLY     0    /* Echo Reply */
-#define ICMP_DEST_UNREACH  3    /* Destination Unreachable */
+/* ICMPv4 types. */
+#define ICMP4_ECHO_REPLY         0       /* Echo Reply                   */
+#define ICMP4_DEST_UNREACH       3       /* Destination Unreachable      */
+#define ICMP4_SOURCE_QUENCH      4       /* Source Quench                */
+#define ICMP4_REDIRECT           5       /* Redirect (change route)      */
+#define ICMP4_ECHO_REQUEST       8       /* Echo Request                 */
+#define ICMP4_ROUTER_ADVERT      9       /* Router Advert                */
+#define ICMP4_ROUTER_SOLICIT     10      /* Router Solicit               */
+#define ICMP4_TIME_EXCEEDED      11      /* Time Exceeded                */
+#define ICMP4_PARAM_PROB         12      /* Parameter Problem            */
+#define ICMP4_TIMESTAMP_REQUEST  13      /* Timestamp Request            */
+#define ICMP4_TIMESTAMP_REPLY    14      /* Timestamp Reply              */
+#define ICMP4_INFO_REQUEST       15      /* Information Request          */
+#define ICMP4_INFO_REPLY         16      /* Information Reply            */
+#define ICMP4_MASK_REQUEST       17      /* Address Mask Request         */
+#define ICMP4_MASK_REPLY         18      /* Address Mask Reply           */
+
+/* ICMPv6 types. */
+#define ICMP6_DST_UNREACH          1
+#define ICMP6_PACKET_TOO_BIG       2
+#define ICMP6_TIME_EXCEEDED        3
+#define ICMP6_PARAM_PROB           4
+#define ICMP6_ECHO_REQUEST         128
+#define ICMP6_ECHO_REPLY           129
+#define ICMP6_MEMBERSHIP_QUERY     130
+#define ICMP6_MEMBERSHIP_REPORT    131
+#define ICMP6_MEMBERSHIP_REDUCTION 132
+#define ND_ROUTER_SOLICIT          133
+#define ND_ROUTER_ADVERT           134
+#define ND_NEIGHBOR_SOLICIT        135     /* neighbor solicitation */
+#define ND_NEIGHBOR_ADVERT         136     /* neighbor advertisment */
+#define ND_REDIRECT                137
+
 
 /* IGMP related constants */
 #define IGMP_UNKNOWN    0x00    /* For IGMP packets where we don't know the type */
@@ -202,10 +235,11 @@ typedef union _OVS_PACKET_HDR_INFO {
         UINT16 isIPv6:1;
         UINT16 isTcp:1;
         UINT16 isUdp:1;
+        UINT16 isSctp:1;
         UINT16 tcpCsumNeeded:1;
         UINT16 udpCsumNeeded:1;
         UINT16 udpCsumZero:1;
-        UINT16 pad:9;
+        UINT16 pad:8;
     } ;
     UINT64 value;
 } OVS_PACKET_HDR_INFO, *POVS_PACKET_HDR_INFO;
@@ -213,7 +247,13 @@ typedef union _OVS_PACKET_HDR_INFO {
 typedef struct IPHdr {
    UINT8    ihl:4,
             version:4;
-   UINT8    tos;
+   union {
+       struct {
+           UINT8 ecn:2,
+                 dscp:6;
+       };
+       UINT8    tos;
+   };
    UINT16   tot_len;
    UINT16   id;
    UINT16   frag_off;
@@ -269,6 +309,17 @@ typedef struct ICMPHdr {
    UINT8    type;
    UINT8    code;
    UINT16   checksum;
+   union {
+        struct {
+            UINT16 id;
+            UINT16 seq;
+        } echo;
+        struct {
+            UINT16 empty;
+            UINT16 mtu;
+        } frag;
+        UINT32 gateway;
+    } fields;
 } ICMPHdr;
 
 typedef struct ICMPEcho {
@@ -288,20 +339,32 @@ typedef struct TCPHdr {
    UINT16    dest;
    UINT32    seq;
    UINT32    ack_seq;
-   UINT16    res1:4,
-             doff:4,
-             fin:1,
-             syn:1,
-             rst:1,
-             psh:1,
-             ack:1,
-             urg:1,
-             ece:1,
-             cwr:1;
+   union {
+       struct {
+           UINT16 res1:4,
+                  doff:4,
+                  fin:1,
+                  syn:1,
+                  rst:1,
+                  psh:1,
+                  ack:1,
+                  urg:1,
+                  ece:1,
+                  cwr:1;
+       };
+       UINT16 flags;
+   };
    UINT16    window;
    UINT16    check;
    UINT16    urg_ptr;
 } TCPHdr;
+
+typedef struct SCTPHdr {
+   UINT16    source;
+   UINT16    dest;
+   UINT32    vtag;
+   UINT32    check;
+} SCTPHdr;
 
 typedef struct PseudoHdr {
    UINT32   sourceIPAddr;
@@ -365,5 +428,6 @@ typedef struct IPOpt {
 #define SOCKET_IPPROTO_TCP   6
 #define SOCKET_IPPROTO_UDP   17
 #define SOCKET_IPPROTO_GRE   47
+#define SOCKET_IPPROTO_SCTP  132
 
 #endif /* __NET_PROTO_H_ */

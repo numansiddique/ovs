@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,15 +38,15 @@
 #include "guarded-list.h"
 #include "heap.h"
 #include "hindex.h"
-#include "list.h"
-#include "ofp-actions.h"
-#include "ofp-errors.h"
-#include "ofp-util.h"
 #include "ofproto/ofproto.h"
+#include "openvswitch/list.h"
+#include "openvswitch/ofp-actions.h"
+#include "openvswitch/ofp-util.h"
+#include "openvswitch/ofp-errors.h"
 #include "ovs-atomic.h"
 #include "ovs-rcu.h"
 #include "ovs-thread.h"
-#include "shash.h"
+#include "openvswitch/shash.h"
 #include "simap.h"
 #include "timeval.h"
 
@@ -78,7 +78,7 @@ struct ofproto {
     char *sw_desc;              /* Software version (NULL for default). */
     char *serial_desc;          /* Serial number (NULL for default). */
     char *dp_desc;              /* Datapath description (NULL for default). */
-    enum ofp_config_flags frag_handling; /* One of OFPC_*.  */
+    enum ofputil_frag_handling frag_handling;
 
     /* Datapath. */
     struct hmap ports;          /* Contains "struct ofport"s. */
@@ -121,14 +121,6 @@ struct ofproto {
      * the flow table and reacquire the global lock. */
     struct guarded_list rule_executes; /* Contains "struct rule_execute"s. */
 
-    /* Linux VLAN device support (e.g. "eth0.10" for VLAN 10.)
-     *
-     * This is deprecated.  It is only for compatibility with broken device
-     * drivers in old versions of Linux that do not properly support VLANs when
-     * VLAN devices are not used.  When broken device drivers are no longer in
-     * widespread use, we will delete these interfaces. */
-    unsigned long int *vlan_bitmap; /* 4096-bit bitmap of in-use VLANs. */
-    bool vlans_changed;             /* True if new VLANs are in use. */
     int min_mtu;                    /* Current MTU of non-internal ports. */
 
     /* Groups. */
@@ -255,6 +247,18 @@ struct oftable {
 #define EVICTION_CLIENT  (1 << 0)  /* Set to 1 if client enables eviction. */
 #define EVICTION_OPENFLOW (1 << 1) /* Set to 1 if OpenFlow enables eviction. */
     unsigned int eviction;
+
+    /* If zero, vacancy events are disabled.  If nonzero, this is the type of
+       vacancy event that is enabled: either OFPTR_VACANCY_DOWN or
+       OFPTR_VACANCY_UP.  Only one type of vacancy event can be enabled at a
+       time. */
+    enum ofp14_table_reason vacancy_event;
+
+    /* Non-zero values for vacancy_up and vacancy_down indicates that vacancy
+     * is enabled by table-mod, else these values are set to zero when
+     * vacancy is disabled */
+    uint8_t vacancy_down; /* Vacancy threshold when space decreases (%). */
+    uint8_t vacancy_up;   /* Vacancy threshold when space increases (%). */
 
     atomic_ulong n_matched;
     atomic_ulong n_missed;
@@ -472,9 +476,6 @@ extern unsigned ofproto_max_idle;
 /* Number of upcall handler and revalidator threads. Only affects the
  * ofproto-dpif implementation. */
 extern size_t n_handlers, n_revalidators;
-
-/* Number of rx queues to be created for each dpdk interface. */
-extern size_t n_dpdk_rxqs;
 
 /* Cpu mask for pmd threads. */
 extern char *pmd_cpu_mask;
@@ -857,8 +858,11 @@ struct ofproto_class {
                          struct ofputil_table_stats *stats);
 
     /* Sets the current tables version the provider should use for classifier
-     * lookups. */
+     * lookups.  This must be called with a new version number after each set
+     * of flow table changes has been completed, so that datapath revalidation
+     * can be triggered. */
     void (*set_tables_version)(struct ofproto *ofproto, cls_version_t version);
+
 /* ## ---------------- ## */
 /* ## ofport Functions ## */
 /* ## ---------------- ## */
@@ -890,12 +894,36 @@ struct ofproto_class {
      *     initialization, and construct and destruct ofports to reflect all of
      *     the changes.
      *
+     *   - On graceful shutdown, the base ofproto code will destruct all
+     *     the ports.
+     *
      * ->port_construct() returns 0 if successful, otherwise a positive errno
      * value.
+     *
+     *
+     * ->port_destruct()
+     * =================
+     *
+     * ->port_destruct() takes a 'del' parameter.  If the provider implements
+     * the datapath itself (e.g. dpif-netdev, it can ignore 'del'.  On the
+     * other hand, if the provider is an interface to an external datapath
+     * (e.g. to a kernel module that implement the datapath) then 'del' should
+     * influence destruction behavior in the following way:
+     *
+     *   - If 'del' is true, it should remove the port from the underlying
+     *     implementation.  This is the common case.
+     *
+     *   - If 'del' is false, it should leave the port in the underlying
+     *     implementation.  This is used when Open vSwitch is performing a
+     *     graceful shutdown and ensures that, across Open vSwitch restarts,
+     *     the underlying ports are not removed and recreated.  That makes an
+     *     important difference for, e.g., "internal" ports that have
+     *     configured IP addresses; without this distinction, the IP address
+     *     and other configured state for the port is lost.
      */
     struct ofport *(*port_alloc)(void);
     int (*port_construct)(struct ofport *ofport);
-    void (*port_destruct)(struct ofport *ofport);
+    void (*port_destruct)(struct ofport *ofport, bool del);
     void (*port_dealloc)(struct ofport *ofport);
 
     /* Called after 'ofport->netdev' is replaced by a new netdev object.  If
@@ -1173,8 +1201,9 @@ struct ofproto_class {
      * ========
      *
      * The ofproto base code removes 'rule' from its flow table before it calls
-     * ->rule_delete().  ->rule_delete() must remove 'rule' from the datapath
-     * flow table and return only after this has completed successfully.
+     * ->rule_delete() (if non-null).  ->rule_delete() must remove 'rule' from
+     * the datapath flow table and return only after this has completed
+     * successfully.
      *
      * Rule deletion must not fail.
      *
@@ -1226,22 +1255,22 @@ struct ofproto_class {
      * which takes one of the following values, with the corresponding
      * meanings:
      *
-     *  - OFPC_FRAG_NORMAL: The switch should treat IP fragments the same way
-     *    as other packets, omitting TCP and UDP port numbers (always setting
-     *    them to 0).
+     *  - OFPUTIL_FRAG_NORMAL: The switch should treat IP fragments the same
+     *    way as other packets, omitting TCP and UDP port numbers (always
+     *    setting them to 0).
      *
-     *  - OFPC_FRAG_DROP: The switch should drop all IP fragments without
+     *  - OFPUTIL_FRAG_DROP: The switch should drop all IP fragments without
      *    passing them through the flow table.
      *
-     *  - OFPC_FRAG_REASM: The switch should reassemble IP fragments before
+     *  - OFPUTIL_FRAG_REASM: The switch should reassemble IP fragments before
      *    passing packets through the flow table.
      *
-     *  - OFPC_FRAG_NX_MATCH (a Nicira extension): Similar to OFPC_FRAG_NORMAL,
-     *    except that TCP and UDP port numbers should be included in fragments
-     *    with offset 0.
+     *  - OFPUTIL_FRAG_NX_MATCH (a Nicira extension): Similar to
+     *    OFPUTIL_FRAG_NORMAL, except that TCP and UDP port numbers should be
+     *    included in fragments with offset 0.
      *
      * Implementations are not required to support every mode.
-     * OFPC_FRAG_NORMAL is the default mode when an ofproto is created.
+     * OFPUTIL_FRAG_NORMAL is the default mode when an ofproto is created.
      *
      * At the time of the call to ->set_frag_handling(), the current mode is
      * available in 'ofproto->frag_handling'.  ->set_frag_handling() returns
@@ -1251,7 +1280,7 @@ struct ofproto_class {
      * reflect the new mode.
      */
     bool (*set_frag_handling)(struct ofproto *ofproto,
-                              enum ofp_config_flags frag_handling);
+                              enum ofputil_frag_handling frag_handling);
 
     /* Implements the OpenFlow OFPT_PACKET_OUT command.  The datapath should
      * execute the 'ofpacts_len' bytes of "struct ofpacts" in 'ofpacts'.
@@ -1296,6 +1325,9 @@ struct ofproto_class {
                               const struct ofpact *ofpacts,
                               size_t ofpacts_len);
 
+    enum ofperr (*nxt_resume)(struct ofproto *ofproto,
+                              const struct ofputil_packet_in_private *);
+
 /* ## ------------------------- ## */
 /* ## OFPP_NORMAL configuration ## */
 /* ## ------------------------- ## */
@@ -1332,6 +1364,16 @@ struct ofproto_class {
             *bridge_exporter_options,
         const struct ofproto_ipfix_flow_exporter_options
             *flow_exporters_options, size_t n_flow_exporters_options);
+
+    /* Gets IPFIX stats on 'ofproto' according to the exporter of birdge
+     * IPFIX or flow-based IPFIX.
+     *
+     * OFPERR_NXST_NOT_CONFIGURED as a return value indicates that bridge
+     * IPFIX or flow-based IPFIX is not configured. */
+    int (*get_ipfix_stats)(
+        const struct ofproto *ofproto,
+        bool bridge_ipfix, struct ovs_list *replies
+        );
 
     /* Configures connectivity fault management on 'ofport'.
      *
@@ -1668,25 +1710,6 @@ struct ofproto_class {
     int (*set_mcast_snooping_port)(struct ofproto *ofproto_, void *aux,
                           const struct ofproto_mcast_snooping_port_settings *s);
 
-/* Linux VLAN device support (e.g. "eth0.10" for VLAN 10.)
- *
- * This is deprecated.  It is only for compatibility with broken device drivers
- * in old versions of Linux that do not properly support VLANs when VLAN
- * devices are not used.  When broken device drivers are no longer in
- * widespread use, we will delete these interfaces. */
-
-    /* If 'realdev_ofp_port' is nonzero, then this function configures 'ofport'
-     * as a VLAN splinter port for VLAN 'vid', associated with the real device
-     * that has OpenFlow port number 'realdev_ofp_port'.
-     *
-     * If 'realdev_ofp_port' is zero, then this function deconfigures 'ofport'
-     * as a VLAN splinter port.
-     *
-     * This function should be NULL if an implementation does not support it.
-     */
-    int (*set_realdev)(struct ofport *ofport,
-                       ofp_port_t realdev_ofp_port, int vid);
-
 /* ## ------------------------ ## */
 /* ## OpenFlow meter functions ## */
 /* ## ------------------------ ## */
@@ -1787,6 +1810,9 @@ void ofproto_delete_flow(struct ofproto *, const struct match *, int priority)
     OVS_EXCLUDED(ofproto_mutex);
 void ofproto_flush_flows(struct ofproto *);
 
+enum ofperr ofproto_check_ofpacts(struct ofproto *,
+                                  const struct ofpact ofpacts[],
+                                  size_t ofpacts_len);
 
 static inline const struct rule_actions *
 rule_get_actions(const struct rule *rule)

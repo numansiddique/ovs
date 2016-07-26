@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2015 Nicira, Inc.
+ * Copyright (c) 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,8 +42,7 @@
  * A "quiescent state" is a time at which a thread holds no pointers to memory
  * that is managed by RCU; that is, when the thread is known not to reference
  * memory that might be an old version of some object freed via RCU.  For
- * example, poll_block() includes a quiescent state, as does
- * ovs_mutex_cond_wait().
+ * example, poll_block() includes a quiescent state.
  *
  * The following functions manage the recognition of quiescent states:
  *
@@ -56,7 +55,8 @@
  *
  *         Brackets a time period during which the current thread is quiescent.
  *
- * A newly created thread is initially active, not quiescent.
+ * A newly created thread is initially active, not quiescent. When a process
+ * becomes multithreaded, the main thread becomes active, not quiescent.
  *
  * When a quiescient state has occurred in every thread, we say that a "grace
  * period" has occurred.  Following a grace period, all of the callbacks
@@ -207,7 +207,9 @@ static inline void ovsrcu_set__(struct ovsrcu_pointer *pointer,
  * grace period.  See "Usage" above for an example. */
 void ovsrcu_postpone__(void (*function)(void *aux), void *aux);
 #define ovsrcu_postpone(FUNCTION, ARG)                          \
-    ((void) sizeof((FUNCTION)(ARG), 1),                         \
+    (/* Verify that ARG is appropriate for FUNCTION. */         \
+     (void) sizeof((FUNCTION)(ARG), 1),                         \
+     /* Verify that ARG is a pointer type. */                   \
      (void) sizeof(*(ARG)),                                     \
      ovsrcu_postpone__((void (*)(void *))(FUNCTION), ARG))
 
@@ -215,6 +217,7 @@ void ovsrcu_postpone__(void (*function)(void *aux), void *aux);
 void ovsrcu_quiesce_start(void);
 void ovsrcu_quiesce_end(void);
 void ovsrcu_quiesce(void);
+int ovsrcu_try_quiesce(void);
 bool ovsrcu_is_quiescent(void);
 
 /* Synchronization.  Waits for all non-quiescent threads to quiesce at least

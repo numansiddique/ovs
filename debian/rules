@@ -13,7 +13,7 @@
 
 PACKAGE=openvswitch
 PACKAGE_DKMS=openvswitch-datapath-dkms
-DEB_UPSTREAM_VERSION=$(shell dpkg-parsechangelog | sed -rne 's,^Version: ([0-9]:)*([^-]+).*,\2,p')
+DEB_UPSTREAM_VERSION=$(shell dpkg-parsechangelog | sed -rne 's,^Version: ([0-9]+:)?([0-9][a-zA-Z0-9.+:~-]*)(-[a-zA-Z0-9*.~]*),\2,p')
 
 ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 PARALLEL = -j$(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
@@ -30,12 +30,11 @@ override_dh_autoreconf:
 	dh_autoreconf $(DH_AS_NEEDED)
 
 override_dh_auto_configure:
-	dh_auto_configure -- --enable-ssl $(DATAPATH_CONFIGURE_OPTS)
+	dh_auto_configure -- --enable-ssl --enable-shared $(DATAPATH_CONFIGURE_OPTS)
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
-	if $(MAKE) check TESTSUITEFLAGS='$(PARALLEL)' || \
-				$(MAKE) check TESTSUITEFLAGS='--recheck'; then :; \
+	if $(MAKE) check TESTSUITEFLAGS='$(PARALLEL)' RECHECK=yes; then :; \
 	else \
 		cat tests/testsuite.log; \
 		exit 1; \
@@ -53,6 +52,12 @@ override_dh_install:
 	dh_install
 	# openvswitch-switch
 	cp debian/openvswitch-switch.template debian/openvswitch-switch/usr/share/openvswitch/switch/default.template
+
+	# ovn-host
+	cp debian/ovn-host.template debian/ovn-host/usr/share/ovn/host/default.template
+
+	# ovn-central
+	cp debian/ovn-central.template debian/ovn-central/usr/share/ovn/central/default.template
 
 	# openvswitch-datapath-source
 	cp debian/rules.modules debian/openvswitch-datapath-source/usr/src/modules/openvswitch-datapath/debian/rules
@@ -86,3 +91,5 @@ override_dh_installinit:
 
 override_dh_strip:
 	dh_strip --dbg-package=openvswitch-dbg
+
+override_dh_usrlocal:

@@ -5,7 +5,7 @@
     physical ports into logical switches maintained by a network
     virtualization controller such as NSX.
   </p>
-  
+
   <p>Glossary:</p>
 
   <dl>
@@ -29,7 +29,28 @@
     <dd>
       Virtual Routing and Forwarding instance.
     </dd>
- </dl>
+  </dl>
+
+  <h2>Common Column</h2>
+
+  <p>
+    Some tables contain a column, named <code>other_config</code>.
+    This column has the same form and purpose each place that it appears,
+    so we describe it here to save space later.
+  </p>
+
+  <dl>
+    <dt><code>other_config</code>: map of string-string pairs</dt>
+    <dd>
+      <p>
+        Key-value pairs for configuring rarely used or proprietary features.
+      </p>
+      <p>
+        Some tables do not have <code>other_config</code> column because no
+        key-value pairs have yet been defined for them.
+      </p>
+    </dd>
+  </dl>
 
   <table name="Global" title="Top-level configuration.">
     Top-level configuration for a hardware VTEP.  There must be
@@ -67,6 +88,14 @@
         table for more information.
       </column>
     </group>
+
+    <group title="Common Column">
+      The overall purpose of this column is described under <code>Common
+      Column</code> at the beginning of this document.
+
+      <column name="other_config"/>
+    </group>
+
   </table>
 
   <table name="Manager" title="OVSDB management connection.">
@@ -238,7 +267,7 @@
       </p>
 
       <column name="other_config" key="dscp"
-                type='{"type": "integer"}'>
+              type='{"type": "integer"}'>
         The Differentiated Service Code Point (DSCP) is specified using 6 bits
         in the Type of Service (TOS) field in the IP header. DSCP provides a
         mechanism to classify the network traffic and provide Quality of
@@ -287,7 +316,7 @@
       <column name="name">
         Symbolic name for the switch, such as its hostname.
       </column>
-      
+
       <column name="description">
         An extended description for the switch, such as its switch login
         banner.
@@ -310,12 +339,63 @@
         requested by the NVC due to lack of resources.
       </column>
 
+      <column name="switch_fault_status" key="lr_switch_bindings_fault">
+        Indicates that the switch has been unable to create the logical router
+        interfaces requested by the NVC due to conflicting configurations or a
+        lack of hardware resources.
+      </column>
+
+      <column name="switch_fault_status" key="lr_static_routes_fault">
+        Indicates that the switch has been unable to create the static routes
+        requested by the NVC due to conflicting configurations or a lack of
+        hardware resources.
+      </column>
+
+      <column name="switch_fault_status" key="lr_creation_fault">
+        Indicates that the switch has been unable to create the logical router
+        requested by the NVC due to conflicting configurations or a lack of
+        hardware resources.
+      </column>
+
+      <column name="switch_fault_status" key="lr_support_fault">
+        Indicates that the switch does not support logical routing.
+      </column>
+
       <column name="switch_fault_status" key="unspecified_fault">
         Indicates that an error has occurred in the switch but that no
         more specific information is available.
       </column>
 
+      <column name="switch_fault_status"
+        key="unsupported_source_node_replication">
+        Indicates that the requested source node replication mode cannot be
+        supported by the physical switch;  this specifically means in this
+        context that the physical switch lacks the capability to support
+        source node replication mode.  This error occurs when a controller
+        attempts to set source node replication mode for one of the logical
+        switches that the physical switch is keeping context for.  An NVC
+        that observes this error should take appropriate action (for example
+        reverting the logical switch to service node replication mode).
+        It is recommended that an NVC be proactive and test for support of
+        source node replication by using a test logical switch on vtep
+        physical switch nodes and then trying to change the replication mode
+        to source node on this logical switch, checking for error.  The NVC
+        could remember this capability per vtep physical switch.  Using
+        mixed replication modes on a given logical switch is not recommended.
+        Service node replication mode is considered a basic requirement
+        since it only requires sending a packet to a single transport node,
+        hence it is not expected that a switch should report that service
+        node mode cannot be supported.
+      </column>
     </group>
+
+    <group title="Common Column">
+      The overall purpose of this column is described under <code>Common
+      Column</code> at the beginning of this document.
+
+      <column name="other_config"/>
+    </group>
+
   </table>
 
   <table name="Tunnel" title="A tunnel created by a physical switch.">
@@ -357,7 +437,7 @@
       </p>
 
       <p>
-        In most cases the BFD peer of a hardware VTEP will be an Open vSwitch
+        In many cases the BFD peer of a hardware VTEP will be an Open vSwitch
         instance. The Open vSwitch implementation of BFD aims to comply
         faithfully with the requirements put forth in RFC 5880.  Open vSwitch
         does not implement the optional Authentication or ``Echo Mode''
@@ -413,8 +493,8 @@
         </p>
 
         <column name="bfd_params" key="enable" type='{"type": "boolean"}'>
-          True to enable BFD on this tunnel.
-          The default is False.
+          True to enable BFD on this <ref table="Tunnel"/>.  If not
+          specified, BFD will not be enabled by default.
         </column>
 
         <column name="bfd_params" key="min_rx"
@@ -435,21 +515,24 @@
 
         <column name="bfd_params" key="decay_min_rx" type='{"type": "integer"}'>
           An alternate receive interval, in milliseconds, that must be greater
-          than or equal to <ref column="bfd" key="min_rx"/>.  The
-          implementation switches from <ref column="bfd" key="min_rx"/> to <ref
-          column="bfd" key="decay_min_rx"/> when there is no obvious incoming
-          data traffic at the interface, to reduce the CPU and bandwidth cost
-          of monitoring an idle interface.  This feature may be disabled by
-          setting a value of 0.  This feature is reset whenever <ref
-          column="bfd" key="decay_min_rx"/> or <ref column="bfd" key="min_rx"/>
-          changes.
+          than or equal to <ref column="bfd_params" key="min_rx"/>.  The
+          implementation should switch from <ref column="bfd_params" key="min_rx"/>
+          to <ref column="bfd_params" key="decay_min_rx"/> when there is no obvious
+          incoming data traffic at the tunnel, to reduce the CPU and bandwidth
+          cost of monitoring an idle tunnel.  This feature may be disabled by
+          setting a value of 0.  This feature is reset whenever
+          <ref column="bfd_params" key="decay_min_rx"/> or
+          <ref column="bfd_params" key="min_rx"/> changes.
         </column>
 
         <column name="bfd_params" key="forwarding_if_rx" type='{"type": "boolean"}'>
-          True to consider the interface capable of packet I/O as long as it
-          continues to receive any packets (not just BFD packets).  This
-          prevents link congestion that causes consecutive BFD control packets
-          to be lost from marking the interface down.
+          When <code>true</code>, traffic received on the <ref table="Tunnel"/>
+          is used to indicate the capability of packet I/O.
+          BFD control packets are still transmitted and received. At least one
+          BFD control packet must be received every
+          100 * <ref column="bfd_params" key="min_rx"/> amount of time.
+          Otherwise, even if traffic is received, the
+          <ref column="bfd_params" key="forwarding"/> will be <code>false</code>.
         </column>
 
         <column name="bfd_params" key="cpath_down" type='{"type": "boolean"}'>
@@ -468,59 +551,58 @@
 
       </group>
 
-     <group title="BFD Status">
-      <p>
-        The VTEP sets key-value pairs in the <ref column="bfd_status"/>
-        column to report the status of BFD on this tunnel.  When BFD is
-        not enabled, with <ref column="bfd_params" key="enable"/>, the
-        HSC clears all key-value pairs from <ref column="bfd_status"/>.
-      </p>
+      <group title="BFD Status">
+        <p>
+          The VTEP sets key-value pairs in the <ref column="bfd_status"/>
+          column to report the status of BFD on this tunnel.  When BFD is
+          not enabled, with <ref column="bfd_params" key="enable"/>, the
+          HSC clears all key-value pairs from <ref column="bfd_status"/>.
+        </p>
 
-      <column name="bfd_status" key="enabled"
-        type='{"type": "boolean"}'>
-        Set to true if the BFD session has been successfully
-        enabled. Set to false if the VTEP cannot support BFD or has
-        insufficient resources to enable BFD on this tunnel. The NVC
-        will disable the BFD monitoring on the other side of the tunnel
-        once this value is set to false.
-      </column>
+        <column name="bfd_status" key="enabled" type='{"type": "boolean"}'>
+          Set to true if the BFD session has been successfully enabled.
+          Set to false if the VTEP cannot support BFD or has insufficient
+          resources to enable BFD on this tunnel. The NVC will disable
+          the BFD monitoring on the other side of the tunnel once this
+          value is set to false.
+        </column>
 
-      <column name="bfd_status" key="state"
-        type='{"type": "string",
+        <column name="bfd_status" key="state"
+                type='{"type": "string",
               "enum": ["set", ["admin_down", "down", "init", "up"]]}'>
-        Reports the state of the BFD session.  The BFD session is fully
-        healthy and negotiated if <code>UP</code>.
-      </column>
+          Reports the state of the BFD session.  The BFD session is fully
+          healthy and negotiated if <code>UP</code>.
+        </column>
 
-      <column name="bfd_status" key="forwarding" type='{"type": "boolean"}'>
-        Reports whether the BFD session believes this tunnel
-        may be used to forward traffic.  Typically this means the local session
-        is signaling <code>UP</code>, and the remote system isn't signaling a
-        problem such as concatenated path down.
-      </column>
+        <column name="bfd_status" key="forwarding" type='{"type": "boolean"}'>
+          Reports whether the BFD session believes this  <ref table="Tunnel"/>
+          may be used to forward traffic.  Typically this means the local session
+          is signaling <code>UP</code>, and the remote system isn't signaling a
+          problem such as concatenated path down.
+        </column>
 
-      <column name="bfd_status" key="diagnostic">
-        In case of a problem, set to an error message that reports what the
-        local BFD session thinks is wrong.  The error messages are defined
-        in section 4.1 of [RFC 5880].
-      </column>
+        <column name="bfd_status" key="diagnostic">
+          A diagnostic code specifying the local system's reason for the
+          last change in session state. The error messages are defined in
+          section 4.1 of [RFC 5880].
+        </column>
 
-      <column name="bfd_status" key="remote_state"
-        type='{"type": "string",
+       <column name="bfd_status" key="remote_state"
+                type='{"type": "string",
               "enum": ["set", ["admin_down", "down", "init", "up"]]}'>
-        Reports the state of the remote endpoint's BFD session.
-      </column>
+          Reports the state of the remote endpoint's BFD session.
+        </column>
 
-      <column name="bfd_status" key="remote_diagnostic">
-        In case of a problem, set to an error message that reports what the
-        remote endpoint's BFD session thinks is wrong.  The error messages
-        are defined in section 4.1 of [RFC 5880].
-      </column>
+        <column name="bfd_status" key="remote_diagnostic">
+          A diagnostic code specifying the remote system's reason for the
+          last change in session state. The error messages are defined in
+          section 4.1 of [RFC 5880].
+        </column>
 
-      <column name="bfd_status" key="info">
-        A short message providing further information about the BFD status
-        (possibly including reasons why BFD could not be enabled).
-      </column>
+        <column name="bfd_status" key="info">
+          A short message providing further information about the BFD status
+          (possibly including reasons why BFD could not be enabled).
+        </column>
       </group>
     </group>
   </table>
@@ -599,6 +681,13 @@
           more specific information is available.
         </p>
       </column>
+    </group>
+
+    <group title="Common Column">
+      The overall purpose of this column is described under <code>Common
+      Column</code> at the beginning of this document.
+
+      <column name="other_config"/>
     </group>
 
   </table>
@@ -687,10 +776,40 @@
         </p>
 
         <p>
-          For <code>vxlan_over_ipv4</code> encapsulation, this column
-          is the VXLAN VNI that identifies a logical switch.  It must
-          be in the range 0 to 16,777,215.
+          For <code>vxlan_over_ipv4</code> encapsulation, when the tunnel key
+          per <ref table="Logical_Switch"/> model is in use, this column is the
+          VXLAN VNI that identifies a logical switch.  It must be in the range
+          0 to 16,777,215.
         </p>
+      </column>
+    </group>
+
+    <group title="Replication Mode">
+      <p>
+        For handling L2 broadcast, multicast and unknown unicast traffic,
+        packets can be sent to all members of a logical switch referenced by
+        a physical switch.  There are different modes to replicate the
+        packets.  The default mode of replication is to send the traffic to
+        a service node, which can be a hypervisor, server or appliance, and
+        let the service node handle replication to other transport nodes
+        (hypervisors or other VTEP physical switches).  This mode is called
+        service node replication.  An alternate mode of replication, called
+        source node replication involves the source node sending to all
+        other transport nodes.  Hypervisors are always responsible for doing
+        their own replication for locally attached VMs in both modes.
+        Service node replication mode is the default and considered a
+        basic requirement because it only requires sending the packet to
+        a single transport node.
+      </p>
+
+      <column name="replication_mode">
+        <p>
+          This optional column defines the replication mode per
+          <ref table="Logical_Switch"/>.  There are 2 valid values,
+          <code>service_node</code> and <code>source_node</code>.  If the
+          column is not set, the replication mode defaults to service_node.
+        </p>
+
       </column>
     </group>
 
@@ -698,12 +817,20 @@
       <column name="name">
         Symbolic name for the logical switch.
       </column>
-      
+
       <column name="description">
         An extended description for the logical switch, such as its switch
         login banner.
       </column>
     </group>
+
+    <group title="Common Column">
+      The overall purpose of this column is described under <code>Common
+      Column</code> at the beginning of this document.
+
+      <column name="other_config"/>
+    </group>
+
   </table>
 
   <table name="Ucast_Macs_Local" title="Unicast MACs (local)">
@@ -735,7 +862,7 @@
 
   </table>
 
- <table name="Ucast_Macs_Remote" title="Unicast MACs (remote)">
+  <table name="Ucast_Macs_Remote" title="Unicast MACs (remote)">
     <p>
       Mapping of unicast MAC addresses to tunnels (physical
       locators). This table is written by the NVC, so it contains the
@@ -779,7 +906,7 @@
 
     <column name="MAC">
       <p>
-        A MAC address that has been learned by the VTEP. 
+        A MAC address that has been learned by the VTEP.
       </p>
       <p>
         The keyword <code>unknown-dst</code> is used as a special
@@ -819,8 +946,8 @@
       Multicast packet replication may be handled by a service node,
       in which case the physical locators will be IP addresses of
       service nodes. If the VTEP supports replication onto multiple
-      tunnels, then this may be used to replicate directly onto
-      VTEP-hypervisor tunnels.
+      tunnels, using source node replication, then this may be used to
+      replicate directly onto VTEP-hypervisor or VTEP-VTEP tunnels.
     </p>
 
     <column name="MAC">
@@ -843,9 +970,14 @@
 
     <column name="locator_set">
       The physical locator set to be used to reach this MAC address. In
-      this table, the physical locator set will be either a service node IP
-      address or a set of tunnel IP addresses of hypervisors (and
-      potentially other VTEPs).
+      this table, the physical locator set will be either a set of service
+      nodes when service node replication is used or the set of transport
+      nodes (defined as hypervisors or VTEPs) participating in the associated
+      logical switch, when source node replication is used. When service node
+      replication is used, the VTEP should send packets to one member of the
+      locator set that is known to be healthy and reachable, which could be
+      determined by BFD.  When source node replication is used, the VTEP
+      should send packets to all members of the locator set.
     </column>
 
     <column name="ipaddr">
@@ -858,10 +990,10 @@
   <table name="Logical_Router" title="A logical L3 router.">
     <p>
       A logical router, or VRF. A logical router may be connected to one or more
-      logical switches. Subnet addresses and interface addresses may be configured on the 
+      logical switches. Subnet addresses and interface addresses may be configured on the
       interfaces.
     </p>
-    
+
     <column name="switch_binding">
       Maps from an IPv4 or IPv6 address prefix in CIDR notation to a
       logical switch. Multiple prefixes may map to the same switch. By
@@ -914,6 +1046,13 @@
           more specific information is available.
         </p>
       </column>
+    </group>
+
+    <group title="Common Column">
+      The overall purpose of this column is described under <code>Common
+      Column</code> at the beginning of this document.
+
+      <column name="other_config"/>
     </group>
 
   </table>
@@ -981,7 +1120,7 @@
       table="Physical_Locator"/> records.''
     </p>
 
-    <column name="locators"/>    
+    <column name="locators"/>
   </table>
 
   <table name="Physical_Locator">
@@ -991,24 +1130,17 @@
     </p>
 
     <p>
-      For the <code>vxlan_over_ipv4</code> encapsulation, the only
-      encapsulation defined so far, all endpoints associated with a given <ref
-      table="Logical_Switch"/> must use a common tunnel key, which is carried
-      in the <ref table="Logical_Switch" column="tunnel_key"/> column of <ref
-      table="Logical_Switch"/>.
-    </p>
-
-    <p>
-      For some encapsulations yet to be defined, we expect <ref
-      table="Physical_Locator"/> to identify both an endpoint and a tunnel key.
-      When the first such encapsulation is defined, we expect to add a
-      ``tunnel_key'' column to <ref table="Physical_Locator"/> to allow the
-      tunnel key to be defined.
-    </p>
-
-    <p>
-      See the ``Per Logical-Switch Tunnel Key'' section in the <ref
-      table="Logical_Switch"/> table for further discussion of the model.
+      The <code>vxlan_over_ipv4</code> encapsulation, the only encapsulation
+      defined so far, can use either tunnel key model described in the ``Per
+      Logical-Switch Tunnel Key'' section in the <ref table="Logical_Switch"/>
+      table.  When the tunnel key per <ref table="Logical_Switch"/> model is in
+      use, the <ref table="Logical_Switch" column="tunnel_key"/> column in the
+      <ref table="Logical_Switch"/> table is filled with a VNI and the <ref
+      column="tunnel_key"/> column in this table is empty; in the
+      key-per-tunnel model, the opposite is true.  The former model is older,
+      and thus likely to be more widely supported.  See the ``Per
+      Logical-Switch Tunnel Key'' section in the <ref table="Logical_Switch"/>
+      table for further discussion of the model.
     </p>
 
     <column name="encapsulation_type">
@@ -1024,6 +1156,21 @@
       <p>
         We expect that this column could be used for IPv4 or IPv6 addresses in
         encapsulations to be introduced later.
+      </p>
+    </column>
+
+    <column name="tunnel_key">
+      <p>
+        This column is used only in the tunnel key per <ref
+        table="Logical_Switch"/>+<ref table="Physical_Locator"/> model (see
+        above).
+      </p>
+
+      <p>
+        For <code>vxlan_over_ipv4</code> encapsulation, when the <ref
+        table="Logical_Switch"/>+<ref table="Physical_Locator"/> model is in
+        use, this column is the VXLAN VNI.  It must be in the range 0 to
+        16,777,215.
       </p>
     </column>
 
@@ -1062,7 +1209,7 @@
           <var>xx</var>:<var>xx</var>:<var>xx</var>:<var>xx</var>:<var>xx</var>:<var>xx</var>
         </p>
       </column>
-            <column name="ethertype">
+      <column name="ethertype">
         <p>
           Ethertype in hexadecimal, in the form
           <var>0xAAAA</var>

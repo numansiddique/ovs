@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2014, 2015 Nicira, Inc.
+/* Copyright (c) 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,14 +26,14 @@
 #include "csum.h"
 #include "dp-packet.h"
 #include "dpif.h"
-#include "dynamic-string.h"
+#include "openvswitch/dynamic-string.h"
 #include "flow.h"
 #include "hash.h"
-#include "hmap.h"
-#include "list.h"
+#include "openvswitch/hmap.h"
+#include "openvswitch/list.h"
 #include "netdev.h"
 #include "odp-util.h"
-#include "ofpbuf.h"
+#include "openvswitch/ofpbuf.h"
 #include "ovs-thread.h"
 #include "openvswitch/types.h"
 #include "packets.h"
@@ -167,6 +167,8 @@ struct bfd {
 
     enum flags flags;             /* Flags sent on messages. */
     enum flags rmt_flags;         /* Flags last received. */
+
+    bool oam;                     /* Set tunnel OAM flag if applicable. */
 
     uint32_t rmt_disc;            /* bfd.RemoteDiscr. */
 
@@ -390,6 +392,8 @@ bfd_configure(struct bfd *bfd, const char *name, const struct smap *cfg,
         bfd_status_changed(bfd);
     }
 
+    bfd->oam = smap_get_bool(cfg, "oam", false);
+
     atomic_store_relaxed(&bfd->check_tnl_key,
                          smap_get_bool(cfg, "check_tnl_key", false));
     min_tx = smap_get_int(cfg, "min_tx", 100);
@@ -586,7 +590,7 @@ bfd_should_send_packet(const struct bfd *bfd) OVS_EXCLUDED(mutex)
 
 void
 bfd_put_packet(struct bfd *bfd, struct dp_packet *p,
-               const struct eth_addr eth_src) OVS_EXCLUDED(mutex)
+               const struct eth_addr eth_src, bool *oam) OVS_EXCLUDED(mutex)
 {
     long long int min_tx, min_rx;
     struct udp_header *udp;
@@ -625,6 +629,7 @@ bfd_put_packet(struct bfd *bfd, struct dp_packet *p,
     ip->ip_proto = IPPROTO_UDP;
     put_16aligned_be32(&ip->ip_src, bfd->ip_src);
     put_16aligned_be32(&ip->ip_dst, bfd->ip_dst);
+    /* Checksum has already been zeroed by put_zeros call. */
     ip->ip_csum = csum(ip, sizeof *ip);
 
     udp = dp_packet_put_zeros(p, sizeof *udp);
@@ -654,6 +659,7 @@ bfd_put_packet(struct bfd *bfd, struct dp_packet *p,
     msg->min_rx = htonl(min_rx * 1000);
 
     bfd->flags &= ~FLAG_FINAL;
+    *oam = bfd->oam;
 
     log_msg(VLL_DBG, msg, "Sending BFD Message", bfd);
 
@@ -939,7 +945,7 @@ bfd_forwarding__(struct bfd *bfd) OVS_REQUIRES(mutex)
 static bool
 bfd_lookup_ip(const char *host_name, struct in_addr *addr)
 {
-    if (!inet_pton(AF_INET, host_name, addr)) {
+    if (!ip_parse(host_name, &addr->s_addr)) {
         VLOG_ERR_RL(&rl, "\"%s\" is not a valid IP address", host_name);
         return false;
     }
@@ -1073,7 +1079,7 @@ log_msg(enum vlog_level level, const struct msg *p, const char *message,
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
 
-    if (vlog_should_drop(THIS_MODULE, level, &rl)) {
+    if (vlog_should_drop(&this_module, level, &rl)) {
         return;
     }
 

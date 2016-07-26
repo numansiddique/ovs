@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,31 +67,6 @@ struct nx_vendor_error {
 };
 
 /* Nicira vendor requests and replies. */
-
-/* Header for Nicira vendor requests and replies. */
-struct nicira_header {
-    struct ofp_header header;
-    ovs_be32 vendor;            /* NX_VENDOR_ID. */
-    ovs_be32 subtype;           /* See the NXT numbers in ofp-msgs.h. */
-};
-OFP_ASSERT(sizeof(struct nicira_header) == 16);
-
-/* Header for Nicira vendor stats request and reply messages in OpenFlow
- * 1.0. */
-struct nicira10_stats_msg {
-    struct ofp10_vendor_stats_msg vsm; /* Vendor NX_VENDOR_ID. */
-    ovs_be32 subtype;           /* One of NXST_* below. */
-    uint8_t pad[4];             /* Align to 64-bits. */
-};
-OFP_ASSERT(sizeof(struct nicira10_stats_msg) == 24);
-
-/* Header for Nicira vendor stats request and reply messages in OpenFlow
- * 1.1. */
-struct nicira11_stats_msg {
-    struct ofp11_vendor_stats_msg vsm; /* Vendor NX_VENDOR_ID. */
-    ovs_be32 subtype;           /* One of NXST_* below. */
-};
-OFP_ASSERT(sizeof(struct nicira11_stats_msg) == 24);
 
 /* Fields to use when hashing flows. */
 enum nx_hash_fields {
@@ -179,11 +154,25 @@ struct nx_flow_mod_table_id {
 OFP_ASSERT(sizeof(struct nx_flow_mod_table_id) == 8);
 
 enum nx_packet_in_format {
-    NXPIF_OPENFLOW10 = 0,       /* Standard OpenFlow 1.0 compatible. */
-    NXPIF_NXM = 1               /* Nicira Extended. */
+    NXPIF_STANDARD = 0,         /* OFPT_PACKET_IN for this OpenFlow version. */
+    NXPIF_NXT_PACKET_IN = 1,    /* NXT_PACKET_IN (since OVS v1.1). */
+    NXPIF_NXT_PACKET_IN2 = 2,   /* NXT_PACKET_IN2 (since OVS v2.6). */
 };
 
-/* NXT_SET_PACKET_IN_FORMAT request. */
+/* NXT_SET_PACKET_IN_FORMAT request.
+ *
+ * For any given OpenFlow version, Open vSwitch supports multiple formats for
+ * "packet-in" messages.  The default is always the standard format for the
+ * OpenFlow version in question, but NXT_SET_PACKET_IN_FORMAT can be used to
+ * set an alternative format.
+ *
+ * From OVS v1.1 to OVS v2.5, this request was only honored for OpenFlow 1.0.
+ * Requests to set format NXPIF_NXT_PACKET_IN were accepted for OF1.1+ but they
+ * had no effect.  (Requests to set formats other than NXPIF_STANDARD or
+ * NXPIF_NXT_PACKET_IN were rejected with OFPBRC_EPERM.)
+ *
+ * From OVS v2.6 onward, this request is honored for all OpenFlow versions.
+ */
 struct nx_set_packet_in_format {
     ovs_be32 format;            /* One of NXPIF_*. */
 };
@@ -245,6 +234,123 @@ struct nx_packet_in {
     /* uint8_t data[0]; */         /* Ethernet frame. */
 };
 OFP_ASSERT(sizeof(struct nx_packet_in) == 24);
+
+/* NXT_PACKET_IN2
+ * ==============
+ *
+ * NXT_PACKET_IN2 is conceptually similar to OFPT_PACKET_IN but it is expressed
+ * as an extensible set of properties instead of using a fixed structure.
+ *
+ * Added in Open vSwitch 2.6
+ *
+ *
+ * Continuations
+ * -------------
+ *
+ * When a "controller" action specifies the "pause" flag, the controller action
+ * freezes the packet's trip through Open vSwitch flow tables and serializes
+ * that state into the packet-in message as a "continuation".  The controller
+ * can later send the continuation back to the switch, which will restart the
+ * packet's traversal from the point where it was interrupted.  This permits an
+ * OpenFlow controller to interpose on a packet midway through processing in
+ * Open vSwitch.
+ *
+ * Continuations fit into packet processing this way:
+ *
+ * 1. A packet ingresses into Open vSwitch, which runs it through the OpenFlow
+ *    tables.
+ *
+ * 2. An OpenFlow flow executes a "controller" action that includes the "pause"
+ *    flag.  Open vSwitch serializes the packet processing state and sends it,
+ *    as an NXT_PACKET_IN2 that includes an additional NXPINT_CONTINUATION
+ *    property (the continuation), to the OpenFlow controller.
+ *
+ *    (The controller must use NXAST_CONTROLLER2 to generate the packet-in,
+ *    because only this form of the "controller" action has a "pause" flag.
+ *    Similarly, the controller must use NXT_SET_PACKET_IN_FORMAT to select
+ *    NXT_PACKET_IN2 as the packet-in format, because this is the only format
+ *    that supports continuation passing.)
+ *
+ * 3. The controller receives the NXT_PACKET_IN2 and processes it.  The
+ *    controller can interpret and, if desired, modify some of the contents of
+ *    the packet-in, such as the packet and the metadata being processed.
+ *
+ * 4. The controller sends the continuation back to the switch, using an
+ *    NXT_RESUME message.  Packet processing resumes where it left off.
+ *
+ * The controller might change the pipeline configuration concurrently with
+ * steps 2 through 4.  For example, it might add or remove OpenFlow flows.  If
+ * that happens, then the packet will experience a mix of processing from the
+ * two configurations, that is, the initial processing (before
+ * NXAST_CONTROLLER2) uses the initial flow table, and the later processing
+ * (after NXT_RESUME) uses the later flow table.  This means that the
+ * controller needs to take care to avoid incompatible pipeline changes while
+ * processing continuations.
+ *
+ * External side effects (e.g. "output") of OpenFlow actions processed before
+ * NXAST_CONTROLLER2 is encountered might be executed during step 2 or step 4,
+ * and the details may vary among Open vSwitch features and versions.  Thus, a
+ * controller that wants to make sure that side effects are executed must pass
+ * the continuation back to the switch, that is, must not skip step 4.
+ *
+ * Architecturally, continuations may be "stateful" or "stateless", that is,
+ * they may or may not refer to buffered state maintained in Open vSwitch.
+ * This means that a controller should not attempt to resume a given
+ * continuations more than once (because the switch might have discarded the
+ * buffered state after the first use).  For the same reason, continuations
+ * might become "stale" if the controller takes too long to resume them
+ * (because the switch might have discarded old buffered state).  Taken
+ * together with the previous note, this means that a controller should resume
+ * each continuation exactly once (and promptly).
+ *
+ * Without the information in NXPINT_CONTINUATION, the controller can (with
+ * careful design, and help from the flow cookie) determine where the packet is
+ * in the pipeline, but in the general case it can't determine what nested
+ * "resubmit"s that may be in progress, or what data is on the stack maintained
+ * by NXAST_STACK_PUSH and NXAST_STACK_POP actions, what is in the OpenFlow
+ * action set, etc.
+ *
+ * Continuations are expensive because they require a round trip between the
+ * switch and the controller.  Thus, they should not be used to implement
+ * processing that needs to happen at "line rate".
+ *
+ * The contents of NXPINT_CONTINUATION are private to the switch, may change
+ * unpredictably from one version of Open vSwitch to another, and are not
+ * documented here.  The contents are also tied to a given Open vSwitch process
+ * and bridge, so that restarting Open vSwitch or deleting and recreating a
+ * bridge will cause the corresponding NXT_RESUME to be rejected.
+ *
+ * In the current implementation, Open vSwitch forks the packet processing
+ * pipeline across patch ports.  Suppose, for example, that the pipeline for
+ * br0 outputs to a patch port whose peer belongs to br1, and that the pipeline
+ * for br1 executes a controller action with the "pause" flag.  This only
+ * pauses processing within br1, and processing in br0 continues and possibly
+ * completes with visible side effects, such as outputting to ports, before
+ * br1's controller receives or processes the continuation.  This
+ * implementation maintains the independence of separate bridges and, since
+ * processing in br1 cannot affect the behavior of br0 anyway, should not cause
+ * visible behavioral changes.
+ *
+ * A stateless implementation of continuations may ignore the "controller"
+ * action max_len, always sending the whole packet, because the full packet is
+ * required to continue traversal.
+ */
+enum nx_packet_in2_prop_type {
+    /* Packet. */
+    NXPINT_PACKET,              /* Raw packet data. */
+    NXPINT_FULL_LEN,            /* ovs_be32: Full packet len, if truncated. */
+    NXPINT_BUFFER_ID,           /* ovs_be32: Buffer ID, if buffered. */
+
+    /* Information about the flow that triggered the packet-in. */
+    NXPINT_TABLE_ID,            /* uint8_t: Table ID. */
+    NXPINT_COOKIE,              /* ovs_be64: Flow cookie. */
+
+    /* Other. */
+    NXPINT_REASON,              /* uint8_t, one of OFPR_*. */
+    NXPINT_METADATA,            /* NXM or OXM for metadata fields. */
+    NXPINT_USERDATA,            /* From NXAST_CONTROLLER2 userdata. */
+    NXPINT_CONTINUATION,        /* Private data for continuing processing. */
+};
 
 /* Configures the "role" of the sending controller.  The default role is:
  *
@@ -668,6 +774,23 @@ struct nx_aggregate_stats_request {
      */
 };
 OFP_ASSERT(sizeof(struct nx_aggregate_stats_request) == 8);
+
+struct nx_ipfix_stats_reply {
+    ovs_be64 total_flows;
+    ovs_be64 current_flows;
+    ovs_be64 pkts;
+    ovs_be64 ipv4_pkts;
+    ovs_be64 ipv6_pkts;
+    ovs_be64 error_pkts;
+    ovs_be64 ipv4_error_pkts;
+    ovs_be64 ipv6_error_pkts;
+    ovs_be64 tx_pkts;
+    ovs_be64 tx_errors;
+    ovs_be32 collector_set_id; /* Range 0 to 4,294,967,295. */
+    uint8_t pad[4];            /* Pad to a multiple of 8 bytes. */
+};
+OFP_ASSERT(sizeof(struct nx_ipfix_stats_reply) == 88);
+
 
 /* NXT_SET_CONTROLLER_ID.
  *
@@ -924,13 +1047,27 @@ struct nx_flow_monitor_cancel {
 };
 OFP_ASSERT(sizeof(struct nx_flow_monitor_cancel) == 4);
 
-/* Geneve option table maintenance commands.
+/* Variable-length option TLV table maintenance commands.
  *
- * In order to work with Geneve options, we need to maintain a mapping
- * table between an option (defined by <class, type, length>) and
- * an NXM field that can be operated on for the purposes of matches,
- * actions, etc. This mapping must be explicitly specified by the
- * user.
+ * The option in Type-Length-Value format is widely used in tunnel options,
+ * e.g., the base Geneve header is followed by zero or more options in TLV
+ * format. Each option consists of a four byte option header and a variable
+ * amount of option data interpreted according to the type. The generic TLV
+ * format in tunnel options is as following:
+ *
+ * 0                   1                   2                   3
+ * 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |          Option Class         |      Type     |R|R|R| Length  |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                      Variable Option Data                     |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *
+ * In order to work with this variable-length options in TLV format in
+ * tunnel options, we need to maintain a mapping table between an option
+ * TLV (defined by <class, type, length>) and an NXM field that can be
+ * operated on for the purposes of matches, actions, etc. This mapping
+ * must be explicitly specified by the user.
  *
  * There are two primary groups of OpenFlow messages that are introduced
  * as Nicira extensions: modification commands (add, delete, clear mappings)
@@ -940,58 +1077,56 @@ OFP_ASSERT(sizeof(struct nx_flow_monitor_cancel) == 4);
  * Note that mappings should not be changed while they are in active use by
  * a flow. The result of doing so is undefined. */
 
-/* Geneve table commands */
-enum nx_geneve_table_mod_command {
-    NXGTMC_ADD,          /* New mappings (fails if an option is already
+/* TLV table commands */
+enum nx_tlv_table_mod_command {
+    NXTTMC_ADD,          /* New mappings (fails if an option is already
                             mapped). */
-    NXGTMC_DELETE,       /* Delete mappings, identified by index
+    NXTTMC_DELETE,       /* Delete mappings, identified by index
                           * (unmapped options are ignored). */
-    NXGTMC_CLEAR,        /* Clear all mappings. Additional information
+    NXTTMC_CLEAR,        /* Clear all mappings. Additional information
                             in this command is ignored. */
 };
 
-/* Map between a Geneve option and an NXM field. */
-struct nx_geneve_map {
-    ovs_be16 option_class; /* Geneve option class. */
-    uint8_t  option_type;  /* Geneve option type. */
-    uint8_t  option_len;   /* Geneve option length (multiple of 4). */
+/* Map between an option TLV and an NXM field. */
+struct nx_tlv_map {
+    ovs_be16 option_class; /* TLV class. */
+    uint8_t  option_type;  /* TLV type. */
+    uint8_t  option_len;   /* TLV length (multiple of 4). */
     ovs_be16 index;        /* NXM_NX_TUN_METADATA<n> index */
     uint8_t  pad[2];
 };
-OFP_ASSERT(sizeof(struct nx_geneve_map) == 8);
+OFP_ASSERT(sizeof(struct nx_tlv_map) == 8);
 
-/* NXT_GENEVE_TABLE_MOD.
+/* NXT_TLV_TABLE_MOD.
  *
- * Use to configure a mapping between Geneve options (class, type, length)
+ * Use to configure a mapping between option TLVs (class, type, length)
  * and NXM fields (NXM_NX_TUN_METADATA<n> where 'index' is <n>).
  *
  * This command is atomic: all operations on different options will
  * either succeed or fail. */
-struct nx_geneve_table_mod {
-    ovs_be16 command;           /* One of NTGTMC_* */
+struct nx_tlv_table_mod {
+    ovs_be16 command;           /* One of NTTTMC_* */
     uint8_t pad[6];
-    /* struct nx_geneve_map[0]; Array of maps between indicies and Geneve
-                                options. The number of elements is
-                                inferred from the length field in the
-                                header. */
+    /* struct nx_tlv_map[0]; Array of maps between indicies and option
+                                TLVs. The number of elements is inferred
+                                from the length field in the header. */
 };
-OFP_ASSERT(sizeof(struct nx_geneve_table_mod) == 8);
+OFP_ASSERT(sizeof(struct nx_tlv_table_mod) == 8);
 
-/* NXT_GENEVE_TABLE_REPLY.
+/* NXT_TLV_TABLE_REPLY.
  *
- * Issued in reponse to an NXT_GENEVE_TABLE_REQUEST to give information
- * about the current status of the Geneve table in the switch. Provides
+ * Issued in reponse to an NXT_TLV_TABLE_REQUEST to give information
+ * about the current status of the TLV table in the switch. Provides
  * both static information about the switch's capabilities as well as
- * the configured Geneve option table. */
-struct nx_geneve_table_reply {
+ * the configured TLV table. */
+struct nx_tlv_table_reply {
     ovs_be32 max_option_space; /* Maximum total of option sizes supported. */
     ovs_be16 max_fields;       /* Maximum number of match fields supported. */
     uint8_t reserved[10];
-    /* struct nx_geneve_map[0]; Array of maps between indicies and Geneve
-                                options. The number of elements is
-                                inferred from the length field in the
-                                header. */
+    /* struct nx_tlv_map[0]; Array of maps between indicies and option
+                                TLVs. The number of elements is inferred
+                                from the length field in the header. */
 };
-OFP_ASSERT(sizeof(struct nx_geneve_table_reply) == 16);
+OFP_ASSERT(sizeof(struct nx_tlv_table_reply) == 16);
 
 #endif /* openflow/nicira-ext.h */

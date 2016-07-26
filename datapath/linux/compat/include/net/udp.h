@@ -1,10 +1,10 @@
 #ifndef __NET_UDP_WRAPPER_H
 #define __NET_UDP_WRAPPER_H  1
 
-#include <linux/version.h>
+#include <net/ip.h>
 
 #ifdef inet_get_local_port_range
-/* RHEL7 backports udp_flow_src_port() using an older version of
+/* Earlier RHEL7 kernels backport udp_flow_src_port() using an older version of
  * inet_get_local_port_range(). */
 #undef inet_get_local_port_range
 #include_next <net/udp.h>
@@ -59,5 +59,4 @@ static inline __sum16 udp_v4_check(int len, __be32 saddr,
 void rpl_udp_set_csum(bool nocheck, struct sk_buff *skb,
 		      __be32 saddr, __be32 daddr, int len);
 #endif
-
 #endif

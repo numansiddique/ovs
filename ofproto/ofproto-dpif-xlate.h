@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
+/* Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@
 
 #include "dp-packet.h"
 #include "flow.h"
-#include "meta-flow.h"
+#include "openvswitch/meta-flow.h"
 #include "odp-util.h"
-#include "ofpbuf.h"
+#include "openvswitch/ofpbuf.h"
 #include "ofproto-dpif-mirror.h"
 #include "ofproto-dpif-rid.h"
 #include "ofproto-dpif.h"
@@ -39,69 +39,10 @@ struct xlate_cache;
 
 struct xlate_out {
     enum slow_path_reason slow; /* 0 if fast path may be used. */
-    bool fail_open;             /* Initial rule is fail open? */
 
-    /* Recirculation IDs on which references are held. */
-    unsigned n_recircs;
-    union {
-        uint32_t recirc[2];   /* When n_recircs == 1 or 2 */
-        uint32_t *recircs;    /* When 'n_recircs' > 2 */
-    };
+    struct recirc_refs recircs; /* Recirc action IDs on which references are
+                                 * held. */
 };
-
-/* Helpers to abstract the recirculation union away. */
-static inline void
-xlate_out_add_recirc(struct xlate_out *xout, uint32_t id)
-{
-    if (OVS_LIKELY(xout->n_recircs < ARRAY_SIZE(xout->recirc))) {
-        xout->recirc[xout->n_recircs++] = id;
-    } else {
-        if (xout->n_recircs == ARRAY_SIZE(xout->recirc)) {
-            uint32_t *recircs = xmalloc(sizeof xout->recirc + sizeof id);
-
-            memcpy(recircs, xout->recirc, sizeof xout->recirc);
-            xout->recircs = recircs;
-        } else {
-            xout->recircs = xrealloc(xout->recircs,
-                                     (xout->n_recircs + 1) * sizeof id);
-        }
-        xout->recircs[xout->n_recircs++] = id;
-    }
-}
-
-static inline const uint32_t *
-xlate_out_get_recircs(const struct xlate_out *xout)
-{
-    if (OVS_LIKELY(xout->n_recircs <= ARRAY_SIZE(xout->recirc))) {
-        return xout->recirc;
-    } else {
-        return xout->recircs;
-    }
-}
-
-static inline void
-xlate_out_take_recircs(struct xlate_out *xout)
-{
-    if (OVS_UNLIKELY(xout->n_recircs > ARRAY_SIZE(xout->recirc))) {
-        free(xout->recircs);
-    }
-    xout->n_recircs = 0;
-}
-
-static inline void
-xlate_out_free_recircs(struct xlate_out *xout)
-{
-    if (OVS_LIKELY(xout->n_recircs <= ARRAY_SIZE(xout->recirc))) {
-        for (int i = 0; i < xout->n_recircs; i++) {
-            recirc_free_id(xout->recirc[i]);
-        }
-    } else {
-        for (int i = 0; i < xout->n_recircs; i++) {
-            recirc_free_id(xout->recircs[i]);
-        }
-        free(xout->recircs);
-    }
-}
 
 struct xlate_in {
     struct ofproto_dpif *ofproto;
@@ -142,18 +83,19 @@ struct xlate_in {
      * 'rule' is the rule being submitted into.  It will be null if the
      * resubmit or OFPP_TABLE action didn't find a matching rule.
      *
-     * 'recurse' is the resubmit recursion depth at time of invocation.
+     * 'indentation' is the resubmit recursion depth at time of invocation,
+     * suitable for indenting the output.
      *
      * This is normally null so the client has to set it manually after
      * calling xlate_in_init(). */
     void (*resubmit_hook)(struct xlate_in *, struct rule_dpif *rule,
-                          int recurse);
+                          int indentation);
 
     /* If nonnull, flow translation calls this function to report some
      * significant decision, e.g. to explain why OFPP_NORMAL translation
-     * dropped a packet.  'recurse' is the resubmit recursion depth at time of
-     * invocation. */
-    void (*report_hook)(struct xlate_in *, int recurse,
+     * dropped a packet.  'indentation' is the resubmit recursion depth at time
+     * of invocation, suitable for indenting the output. */
+    void (*report_hook)(struct xlate_in *, int indentation,
                         const char *format, va_list args);
 
     /* If nonnull, flow translation credits the specified statistics to each
@@ -163,18 +105,23 @@ struct xlate_in {
      * calling xlate_in_init(). */
     const struct dpif_flow_stats *resubmit_stats;
 
-    /* Recursion and resubmission levels carried over from a pre-existing
-     * translation of a related flow. An example of when this can occur is
-     * the translation of an ARP packet that was generated as the result of
-     * outputting to a tunnel port. In this case, the original flow going to
-     * the tunnel is the related flow. Since the two flows are different, they
-     * should not use the same xlate_ctx structure. However, we still need
-     * limit the maximum recursion across the entire translation.
+    /* Counters carried over from a pre-existing translation of a related flow.
+     * This can occur due to, e.g., the translation of an ARP packet that was
+     * generated as the result of outputting to a tunnel port.  In that case,
+     * the original flow going to the tunnel is the related flow.  Since the
+     * two flows are different, they should not use the same xlate_ctx
+     * structure.  However, we still need limit the maximum recursion across
+     * the entire translation.
      *
      * These fields are normally set to zero, so the client has to set them
-     * manually after calling xlate_in_init(). In that case, they should be
-     * copied from the same-named fields in the related flow's xlate_ctx. */
-    int recurse;
+     * manually after calling xlate_in_init().  In that case, they should be
+     * copied from the same-named fields in the related flow's xlate_ctx.
+     *
+     * These fields are really implementation details; the client doesn't care
+     * about what they mean.  See the corresponding fields in xlate_ctx for
+     * real documentation. */
+    int indentation;
+    int depth;
     int resubmits;
 
     /* If nonnull, flow translation populates this cache with references to all
@@ -199,9 +146,8 @@ struct xlate_in {
      * set. */
     struct flow_wildcards *wc;
 
-    /* The recirculation context related to this translation, as returned by
-     * xlate_lookup. */
-    const struct recirc_id_node *recirc;
+    /* The frozen state to be resumed, as returned by xlate_lookup(). */
+    const struct frozen_state *frozen_state;
 };
 
 void xlate_ofproto_set(struct ofproto_dpif *, const char *name, struct dpif *,
@@ -239,7 +185,21 @@ int xlate_lookup(const struct dpif_backer *, const struct flow *,
                  struct dpif_sflow **, struct netflow **,
                  ofp_port_t *ofp_in_port);
 
-void xlate_actions(struct xlate_in *, struct xlate_out *);
+enum xlate_error {
+    XLATE_OK = 0,
+    XLATE_BRIDGE_NOT_FOUND,
+    XLATE_RECURSION_TOO_DEEP,
+    XLATE_TOO_MANY_RESUBMITS,
+    XLATE_STACK_TOO_DEEP,
+    XLATE_NO_RECIRCULATION_CONTEXT,
+    XLATE_RECIRCULATION_CONFLICT,
+    XLATE_TOO_MANY_MPLS_LABELS,
+};
+
+const char *xlate_strerror(enum xlate_error error);
+
+enum xlate_error xlate_actions(struct xlate_in *, struct xlate_out *);
+
 void xlate_in_init(struct xlate_in *, struct ofproto_dpif *,
                    const struct flow *, ofp_port_t in_port, struct rule_dpif *,
                    uint16_t tcp_flags, const struct dp_packet *packet,
@@ -247,7 +207,11 @@ void xlate_in_init(struct xlate_in *, struct ofproto_dpif *,
 void xlate_out_uninit(struct xlate_out *);
 void xlate_actions_for_side_effects(struct xlate_in *);
 
-int xlate_send_packet(const struct ofport_dpif *, struct dp_packet *);
+enum ofperr xlate_resume(struct ofproto_dpif *,
+                         const struct ofputil_packet_in_private *,
+                         struct ofpbuf *odp_actions, enum slow_path_reason *);
+
+int xlate_send_packet(const struct ofport_dpif *, bool oam, struct dp_packet *);
 
 struct xlate_cache *xlate_cache_new(void);
 void xlate_push_stats(struct xlate_cache *, const struct dpif_flow_stats *);

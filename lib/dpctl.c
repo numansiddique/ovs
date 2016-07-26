@@ -28,27 +28,28 @@
 
 #include "command-line.h"
 #include "compiler.h"
+#include "ct-dpif.h"
 #include "dirs.h"
 #include "dpctl.h"
 #include "dpif.h"
-#include "dynamic-string.h"
+#include "openvswitch/dynamic-string.h"
 #include "flow.h"
-#include "match.h"
+#include "openvswitch/match.h"
 #include "netdev.h"
 #include "netdev-dpdk.h"
 #include "netlink.h"
 #include "odp-util.h"
-#include "ofp-parse.h"
-#include "ofpbuf.h"
+#include "openvswitch/ofpbuf.h"
 #include "ovs-numa.h"
 #include "packets.h"
-#include "shash.h"
+#include "openvswitch/shash.h"
 #include "simap.h"
 #include "smap.h"
 #include "sset.h"
 #include "timeval.h"
 #include "unixctl.h"
 #include "util.h"
+#include "openvswitch/ofp-parse.h"
 
 typedef int dpctl_command_handler(int argc, const char *argv[],
                                   struct dpctl_params *);
@@ -507,6 +508,18 @@ print_human_size(struct dpctl_params *dpctl_p, uint64_t value)
     }
 }
 
+/* qsort comparison function. */
+static int
+compare_port_nos(const void *a_, const void *b_)
+{
+    const odp_port_t *ap = a_;
+    const odp_port_t *bp = b_;
+    uint32_t a = odp_to_u32(*ap);
+    uint32_t b = odp_to_u32(*bp);
+
+    return a < b ? -1 : a > b;
+}
+
 static void
 show_dpif(struct dpif *dpif, struct dpctl_params *dpctl_p)
 {
@@ -530,7 +543,25 @@ show_dpif(struct dpif *dpif, struct dpctl_params *dpctl_p)
         }
     }
 
+    odp_port_t *port_nos = NULL;
+    size_t allocated_port_nos = 0, n_port_nos = 0;
     DPIF_PORT_FOR_EACH (&dpif_port, &dump, dpif) {
+        if (n_port_nos >= allocated_port_nos) {
+            port_nos = x2nrealloc(port_nos, &allocated_port_nos,
+                                  sizeof *port_nos);
+        }
+
+        port_nos[n_port_nos] = dpif_port.port_no;
+        n_port_nos++;
+    }
+
+    qsort(port_nos, n_port_nos, sizeof *port_nos, compare_port_nos);
+
+    for (int i = 0; i < n_port_nos; i++) {
+        if (dpif_port_query_by_number(dpif, port_nos[i], &dpif_port)) {
+            continue;
+        }
+
         dpctl_print(dpctl_p, "\tport %u: %s",
                     dpif_port.port_no, dpif_port.name);
 
@@ -546,13 +577,10 @@ show_dpif(struct dpif *dpif, struct dpctl_params *dpctl_p)
                 smap_init(&config);
                 error = netdev_get_config(netdev, &config);
                 if (!error) {
-                    const struct smap_node **nodes;
-                    size_t i;
-
-                    nodes = smap_sort(&config);
-                    for (i = 0; i < smap_count(&config); i++) {
-                        const struct smap_node *node = nodes[i];
-                        dpctl_print(dpctl_p, "%c %s=%s", i ? ',' : ':',
+                    const struct smap_node **nodes = smap_sort(&config);
+                    for (size_t j = 0; j < smap_count(&config); j++) {
+                        const struct smap_node *node = nodes[j];
+                        dpctl_print(dpctl_p, "%c %s=%s", j ? ',' : ':',
                                     node->key, node->value);
                     }
                     free(nodes);
@@ -579,6 +607,7 @@ show_dpif(struct dpif *dpif, struct dpctl_params *dpctl_p)
             if (error) {
                 dpctl_print(dpctl_p, ", open failed (%s)",
                             ovs_strerror(error));
+                dpif_port_destroy(&dpif_port);
                 continue;
             }
             error = netdev_get_stats(netdev, &s);
@@ -611,7 +640,10 @@ show_dpif(struct dpif *dpif, struct dpctl_params *dpctl_p)
                             ovs_strerror(error));
             }
         }
+        dpif_port_destroy(&dpif_port);
     }
+
+    free(port_nos);
 }
 
 typedef void (*dps_for_each_cb)(struct dpif *, struct dpctl_params *);
@@ -797,7 +829,7 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
 
             odp_flow_key_to_flow(f.key, f.key_len, &flow);
             odp_flow_key_to_mask(f.mask, f.mask_len, f.key, f.key_len,
-                                 &wc.masks, &flow);
+                                 &wc, &flow);
             match_init(&match, &flow, &wc);
 
             match_init(&match_filter, &flow_filter, &wc);
@@ -1054,8 +1086,7 @@ dpctl_get_flow(int argc, const char *argv[], struct dpctl_params *dpctl_p)
         goto out;
     }
 
-    /* Does not work for DPDK, since do not know which 'pmd' to apply the
-     * operation.  So, just uses PMD_ID_NULL. */
+    /* In case of PMD will be returned flow from first PMD thread with match. */
     error = dpif_flow_get(dpif, NULL, 0, &ufid, PMD_ID_NULL, &buf, &flow);
     if (error) {
         dpctl_error(dpctl_p, error, "getting flow");
@@ -1240,6 +1271,84 @@ dpctl_list_commands(int argc OVS_UNUSED, const char *argv[] OVS_UNUSED,
     ds_destroy(&ds);
 
     return 0;
+}
+
+static int
+dpctl_dump_conntrack(int argc, const char *argv[],
+                     struct dpctl_params *dpctl_p)
+{
+    struct ct_dpif_dump_state *dump;
+    struct ct_dpif_entry cte;
+    uint16_t zone, *pzone = NULL;
+    struct dpif *dpif;
+    char *name;
+    int error;
+
+    if (argc > 1 && ovs_scan(argv[argc - 1], "zone=%"SCNu16, &zone)) {
+        pzone = &zone;
+        argc--;
+    }
+    name = (argc == 2) ? xstrdup(argv[1]) : get_one_dp(dpctl_p);
+    if (!name) {
+        return EINVAL;
+    }
+    error = parsed_dpif_open(name, false, &dpif);
+    free(name);
+    if (error) {
+        dpctl_error(dpctl_p, error, "opening datapath");
+        return error;
+    }
+
+    error = ct_dpif_dump_start(dpif, &dump, pzone);
+    if (error) {
+        dpctl_error(dpctl_p, error, "starting conntrack dump");
+        dpif_close(dpif);
+        return error;
+    }
+
+    while (!ct_dpif_dump_next(dump, &cte)) {
+        struct ds s = DS_EMPTY_INITIALIZER;
+
+        ct_dpif_format_entry(&cte, &s, dpctl_p->verbosity,
+                             dpctl_p->print_statistics);
+        ct_dpif_entry_uninit(&cte);
+
+        dpctl_print(dpctl_p, "%s\n", ds_cstr(&s));
+        ds_destroy(&s);
+    }
+    ct_dpif_dump_done(dump);
+    dpif_close(dpif);
+    return error;
+}
+
+static int
+dpctl_flush_conntrack(int argc, const char *argv[],
+                      struct dpctl_params *dpctl_p)
+{
+    struct dpif *dpif;
+    uint16_t zone, *pzone = NULL;
+    char *name;
+    int error;
+
+    if (argc > 1 && ovs_scan(argv[argc - 1], "zone=%"SCNu16, &zone)) {
+        pzone = &zone;
+        argc--;
+    }
+    name = (argc == 2) ? xstrdup(argv[1]) : get_one_dp(dpctl_p);
+    if (!name) {
+        return EINVAL;
+    }
+    error = parsed_dpif_open(name, false, &dpif);
+    free(name);
+    if (error) {
+        dpctl_error(dpctl_p, error, "opening datapath");
+        return error;
+    }
+
+    error = ct_dpif_flush(dpif, pzone);
+
+    dpif_close(dpif);
+    return error;
 }
 
 /* Undocumented commands for unit testing. */
@@ -1519,6 +1628,8 @@ static const struct dpctl_command all_commands[] = {
     { "get-flow", "get-flow [dp] ufid", 1, 2, dpctl_get_flow },
     { "del-flow", "del-flow [dp] flow", 1, 2, dpctl_del_flow },
     { "del-flows", "[dp]", 0, 1, dpctl_del_flows },
+    { "dump-conntrack", "[dp] [zone=N]", 0, 2, dpctl_dump_conntrack },
+    { "flush-conntrack", "[dp] [zone=N]", 0, 2, dpctl_flush_conntrack },
     { "help", "", 0, INT_MAX, dpctl_help },
     { "list-commands", "", 0, INT_MAX, dpctl_list_commands },
 

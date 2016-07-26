@@ -22,15 +22,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include "coverage.h"
-#include "dynamic-string.h"
+#include "openvswitch/dynamic-string.h"
 #include "fatal-signal.h"
-#include "list.h"
+#include "openvswitch/list.h"
 #include "ovs-thread.h"
 #include "seq.h"
 #include "socket-util.h"
 #include "timeval.h"
 #include "openvswitch/vlog.h"
-#include "hmap.h"
+#include "openvswitch/hmap.h"
 #include "hash.h"
 
 VLOG_DEFINE_THIS_MODULE(poll_loop);
@@ -253,7 +253,9 @@ log_wakeup(const char *where, const struct pollfd *pollfd, int timeout)
     cpu_usage = get_cpu_usage();
     if (VLOG_IS_DBG_ENABLED()) {
         level = VLL_DBG;
-    } else if (cpu_usage > 50 && !VLOG_DROP_INFO(&rl)) {
+    } else if (cpu_usage > 50
+               && !thread_is_pmd()
+               && !VLOG_DROP_INFO(&rl)) {
         level = VLL_INFO;
     } else {
         return;

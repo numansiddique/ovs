@@ -1,17 +1,24 @@
 #ifndef __NET_GENEVE_WRAPPER_H
 #define __NET_GENEVE_WRAPPER_H  1
 
-#include <linux/version.h>
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,0,0)
-#include_next <net/geneve.h>
-#else
-
 #ifdef CONFIG_INET
 #include <net/udp_tunnel.h>
 #endif
 
 
+#ifdef USE_UPSTREAM_TUNNEL
+#include_next <net/geneve.h>
+
+static inline int rpl_geneve_init_module(void)
+{
+	return 0;
+}
+static inline void rpl_geneve_cleanup_module(void)
+{}
+
+#define geneve_xmit dev_queue_xmit
+
+#else
 /* Geneve Header:
  *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  *  |Ver|  Opt Len  |O|C|    Rsvd.  |          Protocol Type        |
@@ -69,43 +76,22 @@ struct genevehdr {
 };
 
 #ifdef CONFIG_INET
-struct geneve_sock;
-
-typedef void (geneve_rcv_t)(struct geneve_sock *gs, struct sk_buff *skb);
-
-struct geneve_sock {
-	geneve_rcv_t		*rcv;
-	void			*rcv_data;
-	struct socket		*sock;
-	struct rcu_head		rcu;
-};
-
-#define GENEVE_VER 0
-#define GENEVE_BASE_HLEN (sizeof(struct udphdr) + sizeof(struct genevehdr))
-
-#define geneve_sock_add rpl_geneve_sock_add
-struct geneve_sock *rpl_geneve_sock_add(struct net *net, __be16 port,
-				        geneve_rcv_t *rcv, void *data,
-				        bool no_share, bool ipv6);
-
-#define geneve_sock_release rpl_geneve_sock_release
-void rpl_geneve_sock_release(struct geneve_sock *vs);
-
-#define geneve_xmit_skb rpl_geneve_xmit_skb
-int rpl_geneve_xmit_skb(struct geneve_sock *gs, struct rtable *rt,
-		        struct sk_buff *skb, __be32 src, __be32 dst, __u8 tos,
-		        __u8 ttl, __be16 df, __be16 src_port, __be16 dst_port,
-		        __be16 tun_flags, u8 vni[3], u8 opt_len, u8 *opt,
-		        bool csum, bool xnet);
+#define geneve_dev_create_fb rpl_geneve_dev_create_fb
+struct net_device *rpl_geneve_dev_create_fb(struct net *net, const char *name,
+					u8 name_assign_type, u16 dst_port);
 #endif /*ifdef CONFIG_INET */
 
-#endif /* kernel < 4.0 */
+int rpl_geneve_init_module(void);
+void rpl_geneve_cleanup_module(void);
 
-#ifndef HAVE_GENEVE_HDR
-static inline struct genevehdr *geneve_hdr(const struct sk_buff *skb)
-{
-	return (struct genevehdr *)(udp_hdr(skb) + 1);
-}
+#define geneve_xmit rpl_geneve_xmit
+netdev_tx_t rpl_geneve_xmit(struct sk_buff *skb);
+
 #endif
+#define geneve_init_module rpl_geneve_init_module
+#define geneve_cleanup_module rpl_geneve_cleanup_module
 
-#endif /*ifdef__NET_GENEVE_WRAPPER_H */
+#define geneve_fill_metadata_dst ovs_geneve_fill_metadata_dst
+int ovs_geneve_fill_metadata_dst(struct net_device *dev, struct sk_buff *skb);
+
+#endif /*ifdef__NET_GENEVE_H */
