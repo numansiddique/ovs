@@ -46,16 +46,19 @@ stop_ovsdb () {
 }
 
 start_ovsdb () {
+    echo "NUMS : start_ovsdb entered"
     # Check and eventually start ovsdb-server for Northbound DB
     if ! pidfile_is_running $DB_NB_PID; then
         upgrade_db "$DB_NB_FILE" "$DB_NB_SCHEMA" 1>/dev/null 2>/dev/null
 
         set ovsdb-server
 
-        set "$@" --detach --monitor $OVN_NB_LOG --log-file=$OVN_NB_LOGFILE --remote=punix:$DB_NB_SOCK --remote=ptcp:$DB_NB_PORT:$DB_NB_ADDR --pidfile=$DB_NB_PID --unixctl=ovnnb_db.ctl
+        echo "NUMS : start_ovsdb : starting ovsdb-server for OVN NB DB with SSL params"
+        set "$@" --detach --monitor $OVN_NB_LOG --log-file=$OVN_NB_LOGFILE --remote=punix:$DB_NB_SOCK --remote=pssl:$DB_NB_PORT:$DB_NB_ADDR --private-key=/usr/local/var/lib/openvswitch/pki/ctl-privkey.pem --certificate=/usr/local/var/lib/openvswitch/pki/ctl-cert.pem --ca-cert=/usr/local/var/lib/openvswitch/pki/switchca/cacert.pem --pidfile=$DB_NB_PID --unixctl=ovnnb_db.ctl
 
         $@ $DB_NB_FILE
         ovn-nbctl init
+        echo "NUMS : start_ovsdb : ovn-nbctl init success"
     fi
 
     # Check and eventually start ovsdb-server for Southbound DB
