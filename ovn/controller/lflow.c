@@ -24,6 +24,8 @@
 #include "ovn-controller.h"
 #include "ovn/actions.h"
 #include "ovn/expr.h"
+
+#include "../lib/ovn-l7.h"
 #include "ovn/lib/ovn-dhcp.h"
 #include "ovn/lib/ovn-sb-idl.h"
 #include "packets.h"
@@ -37,11 +39,14 @@ VLOG_DEFINE_THIS_MODULE(lflow);
 
 /* Contains "struct expr_symbol"s for fields supported by OVN lflows. */
 static struct shash symtab;
+static struct hmap ovn_l4_fields = HMAP_INITIALIZER(&ovn_l4_fields);
 
 void
 lflow_init(void)
 {
     ovn_init_symtab(&symtab);
+    ovn_init_l4_fields(&ovn_l4_fields);
+    ovn_init_l4_flows();
 }
 
 /* Iterate address sets in the southbound database.  Create and update the
@@ -135,6 +140,8 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
                     dhcpv6_opt_row->type);
     }
 
+    ovn_destroy_l4_flows();
+    ovn_init_l4_flows();
     SBREC_LOGICAL_FLOW_FOR_EACH (lflow, ctx->ovnsb_idl) {
         consider_logical_flow(lports, mcgroups, lflow, local_datapaths,
                               patched_datapaths, group_table, ct_zones,
@@ -277,9 +284,16 @@ consider_logical_flow(const struct lport_index *lports,
         expr = expr_annotate(expr, &symtab, &error);
     }
     if (error) {
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
-        VLOG_WARN_RL(&rl, "error parsing match \"%s\": %s",
-                     lflow->match, error);
+        const char *stage = smap_get(&lflow->external_ids, "stage-name");
+        if (stage && !strcmp(stage, "ls_in_l4_parse")) {
+            ovn_parse_l4_matches_and_store(
+                lflow->match, &ovn_l4_fields, &ofpacts,
+                lflow->logical_datapath->tunnel_key);
+        } else {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
+            VLOG_WARN_RL(&rl, "error parsing match \"%s\": %s",
+                         lflow->match, error);
+        }
         expr_destroy(prereqs);
         ofpbuf_uninit(&ofpacts);
         free(error);
@@ -432,4 +446,6 @@ lflow_destroy(void)
 {
     expr_symtab_destroy(&symtab);
     shash_destroy(&symtab);
+    ovn_l4_fields_destroy(&ovn_l4_fields);
+    ovn_destroy_l4_flows();
 }
