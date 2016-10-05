@@ -38,6 +38,7 @@
 #include "ovn/actions.h"
 #include "ovn/lib/logical-fields.h"
 #include "ovn/lib/ovn-dhcp.h"
+#include "ovn/lib/ovn-l7.h"
 #include "ovn/lib/ovn-util.h"
 #include "poll-loop.h"
 #include "rconn.h"
@@ -659,6 +660,175 @@ exit:
 }
 
 static void
+pinctrl_handle_extract_dns_packet(
+    struct dp_packet *pkt_in, struct ofputil_packet_in *pin,
+    struct ofpbuf *userdata, struct ofpbuf *continuation OVS_UNUSED)
+{
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+    enum ofp_version version = rconn_get_version(swconn);
+    enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
+    struct dp_packet *pkt_out_ptr = NULL;
+    uint32_t success = 0;
+
+    /* Parse result field. */
+    const struct mf_field *f;
+    enum ofperr ofperr = nx_pull_header(userdata, &f, NULL);
+    if (ofperr) {
+       VLOG_WARN_RL(&rl, "bad result OXM (%s)", ofperr_to_string(ofperr));
+       goto exit;
+    }
+
+    /* Parse result offset. */
+    ovs_be32 *ofsp = ofpbuf_try_pull(userdata, sizeof *ofsp);
+    if (!ofsp) {
+        VLOG_WARN_RL(&rl, "offset not present in the userdata");
+        goto exit;
+    }
+
+    /* Check that the result is valid and writable. */
+    struct mf_subfield dst = { .field = f, .ofs = ntohl(*ofsp), .n_bits = 1 };
+    ofperr = mf_check_dst(&dst, NULL);
+    if (ofperr) {
+        VLOG_WARN_RL(&rl, "bad result bit (%s)", ofperr_to_string(ofperr));
+        goto exit;
+    }
+
+    /* Extract the DNS header */
+    struct dns_header const *in_dns_header = dp_packet_get_udp_payload(pkt_in);
+
+    /* Check if it is DNS request or not */
+    if (in_dns_header->lo_flag & 0x80) {
+        /* It's a DNS response packet which we are not interested in */
+        goto exit;
+    }
+
+    /* Check if at least one query request is present */
+    if (!ntohs(in_dns_header->qdcount)) {
+        goto exit;
+    }
+
+    struct udp_header *in_udp = dp_packet_l4(pkt_in);
+    size_t udp_len = ntohs(in_udp->udp_len);
+    size_t l4_len = dp_packet_l4_size(pkt_in);
+    uint8_t *end = (uint8_t *)in_udp + MIN(udp_len, l4_len);
+    uint8_t *in_dns_data = (uint8_t *)(in_dns_header + 1);
+    uint8_t idx = 0;
+    struct ds hostname;
+    ds_init(&hostname);
+    while (in_dns_data[idx] && (in_dns_data + idx) < end) {
+        uint8_t label_len = in_dns_data[idx++];
+        for (uint8_t i = 0; i < label_len; i++) {
+            ds_put_char(&hostname, in_dns_data[idx++]);
+        }
+        ds_put_char(&hostname, '.');
+    }
+
+    ds_chomp(&hostname, '.');
+    ds_put_char(&hostname, 0);
+
+    uint64_t dp_key = ntohll(pin->flow_metadata.flow.metadata);
+    struct ovn_l4_dp_flows *l7_dp_flow = ovn_l4_dp_flows_find(dp_key);
+    if (!l7_dp_flow) {
+        goto exit;
+    }
+
+    const char *str_ip = smap_get(&l7_dp_flow->match_actions,
+                                  ds_cstr(&hostname));
+    if (!str_ip) {
+        ds_destroy(&hostname);
+        goto exit;
+    }
+
+    ovs_be32 ip;
+    if (!ip_parse(str_ip, &ip)) {
+        ds_destroy(&hostname);
+        goto exit;
+    }
+
+    uint16_t new_l4_size = ntohs(in_udp->udp_len) +  hostname.length + 15;
+    size_t new_packet_size = pkt_in->l4_ofs + new_l4_size;
+    struct dp_packet pkt_out;
+    dp_packet_init(&pkt_out, new_packet_size);
+    dp_packet_clear(&pkt_out);
+    dp_packet_prealloc_tailroom(&pkt_out, new_packet_size);
+    pkt_out_ptr = &pkt_out;
+
+    /* Copy the L2 and L3 headers from the pkt_in as they would remain same*/
+    dp_packet_put(
+        &pkt_out, dp_packet_pull(pkt_in, pkt_in->l4_ofs), pkt_in->l4_ofs);
+
+    pkt_out.l2_5_ofs = pkt_in->l2_5_ofs;
+    pkt_out.l2_pad_size = pkt_in->l2_pad_size;
+    pkt_out.l3_ofs = pkt_in->l3_ofs;
+    pkt_out.l4_ofs = pkt_in->l4_ofs;
+
+    struct udp_header *out_udp = dp_packet_put(
+        &pkt_out, dp_packet_pull(pkt_in, UDP_HEADER_LEN), UDP_HEADER_LEN);
+
+    /* Copy the DNS header */
+    struct dns_header *out_dns_header = dp_packet_put(
+        &pkt_out, dp_packet_pull(pkt_in, sizeof *out_dns_header),
+        sizeof *out_dns_header);
+
+    /* Set the response bit to 1 in the flags*/
+    out_dns_header->lo_flag |= 0x80;
+
+    /* Set the answer RR to 1 */
+    out_dns_header->ancount = htons(1);
+
+    /* Copy the Query section */
+    void *query_data = dp_packet_put(&pkt_out, dp_packet_data(pkt_in),
+                                     dp_packet_size(pkt_in));
+
+    /* Copy the answer section */
+    /* Format of the answer section is
+     *  - NAME -> The domain name
+     *  - TYPE -> 2 octets containing one of the RR type codes
+     *  - CLASS -> 2 octets which specify the class of the data in the
+     *             RDATA field.
+     *  - TTL   -> 32 bit unsigned int specifying the time interval (in secs)
+     *             that the resource record may be cached before it should
+     *             be discarded.
+     *  - RDLENGTH - 16 bit integer specifying the length of the RDATA field.
+     *  - RDATA   - a variable length string of octets that describes the
+     *              resource. In our case it will be IP address of the domain
+     *              name.
+     */
+    dp_packet_put(&pkt_out, query_data, hostname.length + 1);
+    ovs_be16 v = htons(1); /* Type 'A' */
+    dp_packet_put(&pkt_out, &v, sizeof(ovs_be16));
+    dp_packet_put(&pkt_out, &v, sizeof(ovs_be16)); /* Class 'IN' */
+    ovs_be32 ttl = htonl(3600);
+    dp_packet_put(&pkt_out, &ttl, sizeof(ovs_be32));
+    v = htons(4); /* Length of the RDATA field */
+    dp_packet_put(&pkt_out, &v, sizeof(ovs_be16));
+    dp_packet_put(&pkt_out, &ip, sizeof(ovs_be32));
+    ds_destroy(&hostname);
+
+    out_udp->udp_len = htons(new_l4_size);
+    out_udp->udp_csum = 0;
+
+    struct ip_header *out_ip = dp_packet_l3(&pkt_out);
+    out_ip->ip_tot_len = htons(pkt_out.l4_ofs - pkt_out.l3_ofs + new_l4_size);
+    /* Checksum needs to be initialized to zero. */
+    out_ip->ip_csum = 0;
+    out_ip->ip_csum = csum(out_ip, sizeof *out_ip);
+
+    pin->packet = dp_packet_data(&pkt_out);
+    pin->packet_len = dp_packet_size(&pkt_out);
+
+    success = 1;
+exit:
+    if (!ofperr) {
+        union mf_subvalue sv;
+        sv.u8_val = success;
+        mf_write_subfield(&dst, &sv, &pin->flow_metadata);
+    }
+    queue_msg(ofputil_encode_resume(pin, continuation, proto));
+    dp_packet_uninit(pkt_out_ptr);
+}
+
+static void
 process_packet_in(const struct ofp_header *msg)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
@@ -718,6 +888,10 @@ process_packet_in(const struct ofp_header *msg)
                                        &continuation);
         break;
 
+    case ACTION_OPCODE_EXTRACT_DNS_PACKET:
+        pinctrl_handle_extract_dns_packet(&packet, &pin, &userdata,
+                                          &continuation);
+        break;
     default:
         VLOG_WARN_RL(&rl, "unrecognized packet-in opcode %"PRIu32,
                      ntohl(ah->opcode));

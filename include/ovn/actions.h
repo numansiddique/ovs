@@ -68,7 +68,9 @@ struct simap;
     OVNACT(PUT_ND,        ovnact_put_mac_bind)      \
     OVNACT(PUT_DHCPV4_OPTS, ovnact_put_dhcp_opts)   \
     OVNACT(PUT_DHCPV6_OPTS, ovnact_put_dhcp_opts)   \
-    OVNACT(SET_QUEUE,       ovnact_set_queue)
+    OVNACT(SET_QUEUE,       ovnact_set_queue)       \
+    OVNACT(EXTRACT_DNS_PACKET, ovnact_extract_dns_packet)  \
+    OVNACT(PUT_DNS_ANSWER, ovnact_put_dns_answer)
 
 /* enum ovnact_type, with a member OVNACT_<ENUM> for each action. */
 enum OVS_PACKED_ENUM ovnact_type {
@@ -221,6 +223,18 @@ struct ovnact_put_dhcp_opts {
     size_t n_options;
 };
 
+/* OVNACT_EXTRACT_DNS_PACKET  */
+struct ovnact_extract_dns_packet {
+    struct ovnact ovnact;
+    struct expr_field dst;      /* 1-bit destination field. */
+};
+
+/* OVNACT_PUT_DNS_ANSWER  */
+struct ovnact_put_dns_answer {
+    struct ovnact ovnact;
+    struct expr_constant_set ip;       /* 32-bit or 128-bit IP address. */
+};
+
 /* Valid arguments to SET_QUEUE action.
  *
  * QDISC_MIN_QUEUE_ID is the default queue, so user-defined queues should
@@ -361,6 +375,9 @@ enum action_opcode {
      *   - Any number of DHCPv6 options.
      */
     ACTION_OPCODE_PUT_DHCPV6_OPTS,
+
+    /* "result = extract_dns_packet()". */
+    ACTION_OPCODE_EXTRACT_DNS_PACKET
 };
 
 /* Header. */

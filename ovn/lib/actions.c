@@ -1654,6 +1654,92 @@ static void
 free_SET_QUEUE(struct ovnact_set_queue *a OVS_UNUSED)
 {
 }
+
+/* Parses the "parse_extract_dns_packet" actions.
+ *
+ * The caller has already consumed "<dst> =", so this just parses the rest. */
+static void
+parse_extract_dns_packet(struct action_context *ctx,
+                    const struct expr_field *dst,
+                    struct ovnact_extract_dns_packet *edp)
+{
+    lexer_get(ctx->lexer); /* Skip extract_dns_packet. */
+    lexer_get(ctx->lexer); /* Skip '('. */
+    /* Validate that the destination is a 1-bit, modifiable field. */
+    char *error = expr_type_check(dst, 1, true);
+    if (error) {
+        lexer_error(ctx->lexer, "%s", error);
+        free(error);
+        return;
+    }
+    edp->dst = *dst;
+
+    lexer_get(ctx->lexer); /* Skip ')' */
+}
+
+static void
+format_EXTRACT_DNS_PACKET(const struct ovnact_extract_dns_packet *edp OVS_UNUSED,
+                          struct ds *s)
+{
+
+}
+
+static void
+encode_EXTRACT_DNS_PACKET(const struct ovnact_extract_dns_packet *edp OVS_UNUSED,
+                          const struct ovnact_encode_params *ep OVS_UNUSED,
+                          struct ofpbuf *ofpacts OVS_UNUSED)
+{
+    struct mf_subfield dst = expr_resolve_field(&edp->dst);
+
+    size_t oc_offset = encode_start_controller_op(ACTION_OPCODE_EXTRACT_DNS_PACKET,
+                                                  true, ofpacts);
+    nx_put_header(ofpacts, dst.field->id, OFP13_VERSION, false);
+    ovs_be32 ofs = htonl(dst.ofs);
+    ofpbuf_put(ofpacts, &ofs, sizeof ofs);
+
+    encode_finish_controller_op(oc_offset, ofpacts);
+}
+
+static void
+free_EXTRACT_DNS_PACKET(struct ovnact_extract_dns_packet *a OVS_UNUSED)
+{
+}
+
+static void
+parse_PUT_DNS_ANSWER(struct action_context *ctx)
+{
+    struct ovnact_put_dns_answer *pda = ovnact_put_PUT_DNS_ANSWER(ctx->ovnacts);
+    lexer_force_match(ctx->lexer, LEX_T_LPAREN);
+    if (!expr_constant_set_parse(ctx->lexer, &pda->ip)) {
+        lexer_error(ctx->lexer, "No ip address found");
+    }
+    if (pda->ip.type != EXPR_C_INTEGER) {
+        lexer_error(ctx->lexer, "Value should be numeric");
+    }
+    lexer_force_match(ctx->lexer, LEX_T_RPAREN);
+}
+
+static void
+format_PUT_DNS_ANSWER(const struct ovnact_put_dns_answer *pda OVS_UNUSED,
+                      struct ds *s OVS_UNUSED)
+{
+    //ds_put_format(s, "set_queue(%d);", set_queue->queue_id);
+}
+
+static void
+encode_PUT_DNS_ANSWER(const struct ovnact_put_dns_answer *pda OVS_UNUSED,
+                 const struct ovnact_encode_params *ep OVS_UNUSED,
+                 struct ofpbuf *ofpacts OVS_UNUSED)
+{
+    ovs_be32 query_ip = pda->ip.values[0].value.ipv4;
+    ofpbuf_put(ofpacts, &query_ip, sizeof query_ip);
+}
+
+static void
+free_PUT_DNS_ANSWER(struct ovnact_put_dns_answer *a OVS_UNUSED)
+{
+}
+
 
 /* Parses an assignment or exchange or put_dhcp_opts action. */
 static void
@@ -1677,6 +1763,10 @@ parse_set_action(struct action_context *ctx)
                    && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
             parse_put_dhcp_opts(ctx, &lhs, ovnact_put_PUT_DHCPV6_OPTS(
                                     ctx->ovnacts));
+        } else if (!strcmp(ctx->lexer->token.s, "extract_dns_packet")
+                   && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
+            parse_extract_dns_packet(ctx, &lhs, ovnact_put_EXTRACT_DNS_PACKET(
+                                     ctx->ovnacts));
         } else {
             parse_assignment_action(ctx, false, &lhs);
         }
@@ -1727,6 +1817,8 @@ parse_action(struct action_context *ctx)
         parse_put_mac_bind(ctx, 128, ovnact_put_PUT_ND(ctx->ovnacts));
     } else if (lexer_match_id(ctx->lexer, "set_queue")) {
         parse_SET_QUEUE(ctx);
+    } else if (lexer_match_id(ctx->lexer, "put_dns_answer")) {
+        parse_PUT_DNS_ANSWER(ctx);
     } else {
         lexer_syntax_error(ctx->lexer, "expecting action");
     }

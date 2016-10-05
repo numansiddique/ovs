@@ -111,7 +111,9 @@ enum ovn_stage {
     PIPELINE_STAGE(SWITCH, IN,  ARP_ND_RSP,    10, "ls_in_arp_rsp")       \
     PIPELINE_STAGE(SWITCH, IN,  DHCP_OPTIONS,  11, "ls_in_dhcp_options")  \
     PIPELINE_STAGE(SWITCH, IN,  DHCP_RESPONSE, 12, "ls_in_dhcp_response") \
-    PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,       13, "ls_in_l2_lkup")       \
+    PIPELINE_STAGE(SWITCH, IN,  L4_PARSE,       13, "ls_in_l4_parse") \
+    PIPELINE_STAGE(SWITCH, IN,  L4_RESPONSE,    14, "ls_in_l4_response") \
+    PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,       15, "ls_in_l2_lkup")       \
                                                                       \
     /* Logical switch egress stages. */                               \
     PIPELINE_STAGE(SWITCH, OUT, PRE_LB,       0, "ls_out_pre_lb")     \
@@ -155,6 +157,7 @@ enum ovn_stage {
 #define REGBIT_CONNTRACK_COMMIT "reg0[1]"
 #define REGBIT_CONNTRACK_NAT    "reg0[2]"
 #define REGBIT_DHCP_OPTS_RESULT "reg0[3]"
+#define REGBIT_EXTRACT_DNS_RESULT "reg0[4]"
 
 /* Returns an "enum ovn_stage" built from the arguments. */
 static enum ovn_stage
@@ -3051,7 +3054,53 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         ovn_lflow_add(lflows, od, S_SWITCH_IN_DHCP_RESPONSE, 0, "1", "next;");
     }
 
-    /* Ingress table 13: Destination lookup, broadcast and multicast handling
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbs) {
+            continue;
+        }
+
+        struct ds match;
+        struct ds action;
+        ds_init(&match);
+        ds_init(&action);
+        ds_put_cstr(&match, "ip && ip4.dst == 10.0.0.1 && udp.dst == 53");
+        ds_put_format(&action, REGBIT_EXTRACT_DNS_RESULT" = extract_dns_packet(); next;");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L4_PARSE, 100, ds_cstr(&match),
+                      ds_cstr(&action));
+        ds_destroy(&action);
+        ds_init(&action);
+        ds_put_cstr(&match, " && "REGBIT_EXTRACT_DNS_RESULT);
+        ds_put_format(&action, "eth.dst = eth.src; eth.src = 00:00:00:ff:01:02; "
+                      "ip4.src = 10.0.0.1; ip4.dst = 10.0.0.3; udp.dst = udp.src; "
+                      "udp.src = 53; outport = inport; flags.loopback = 1; "
+                      "output;");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L4_RESPONSE, 100, ds_cstr(&match),
+                      ds_cstr(&action));
+
+        ds_destroy(&match);
+        ds_destroy(&action);
+        ds_init(&match);
+        ds_init(&action);
+        //ds_put_cstr(&match, "ip && ip4.dst == 10.0.0.1 && udp.dst == 53");
+        ds_put_cstr(&match, "dns.query == \"vm1\"");
+        ds_put_cstr(&action, "put_dns_answer(10.0.0.20);");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L4_PARSE, 90, ds_cstr(&match),
+                      ds_cstr(&action));
+        ds_destroy(&match);
+        ds_destroy(&action);
+        ds_init(&match);
+        ds_init(&action);
+        ds_put_cstr(&match, "dns.query == \"vm2\"");
+        ds_put_cstr(&action, "put_dns_answer(10.0.0.21);");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L4_PARSE, 90, ds_cstr(&match),
+                      ds_cstr(&action));
+        ds_destroy(&match);
+        ds_destroy(&action);
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L4_PARSE, 0, "1", "next;");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L4_RESPONSE, 0, "1", "next;");
+    }
+
+    /* Ingress table 15: Destination lookup, broadcast and multicast handling
      * (priority 100). */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbsp) {
@@ -3071,7 +3120,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                       "outport = \""MC_FLOOD"\"; output;");
     }
 
-    /* Ingress table 13: Destination lookup, unicast handling (priority 50), */
+    /* Ingress table 15: Destination lookup, unicast handling (priority 50), */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbsp) {
             continue;
