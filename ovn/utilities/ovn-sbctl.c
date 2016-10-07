@@ -295,9 +295,10 @@ General commands:\n\
   show                        print overview of database contents\n\
 \n\
 Chassis commands:\n\
-  chassis-add CHASSIS ENCAP-TYPE ENCAP-IP  create a new chassis named\n\
-                                           CHASSIS with ENCAP-TYPE tunnels\n\
-                                           and ENCAP-IP\n\
+  chassis-add CHASSIS ENCAP-TYPE ENCAP-IP [HOSTNAME] create a new chassis\n\
+                                                     named CHASSIS with\n\
+                                                     ENCAP-TYPE tunnels and\n\
+                                                     ENCAP-IP\n\
   chassis-del CHASSIS         delete CHASSIS and all of its encaps\n\
                               and gateway_ports\n\
 \n\
@@ -563,7 +564,9 @@ cmd_chassis_add(struct ctl_context *ctx)
     sbrec_chassis_set_name(ch, ch_name);
     sbrec_chassis_set_encaps(ch, encaps, n_encaps);
     free(encaps);
-
+    if (ctx->argc == 5) {
+        sbrec_chassis_set_hostname(ch, ctx->argv[4]);
+    }
     sbctl_context_invalidate_cache(ctx);
 }
 
@@ -1027,8 +1030,8 @@ static const struct ctl_command_syntax sbctl_commands[] = {
     { "init", 0, 0, "", NULL, sbctl_init, NULL, "", RW },
 
     /* Chassis commands. */
-    {"chassis-add", 3, 3, "CHASSIS ENCAP-TYPE ENCAP-IP", pre_get_info,
-     cmd_chassis_add, NULL, "--may-exist", RW},
+    {"chassis-add", 3, 4, "CHASSIS ENCAP-TYPE ENCAP-IP [HOSTNAME]",
+     pre_get_info, cmd_chassis_add, NULL, "--may-exist", RW},
     {"chassis-del", 1, 1, "CHASSIS", pre_get_info, cmd_chassis_del, NULL,
      "--if-exists", RW},
 

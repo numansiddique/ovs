@@ -175,36 +175,33 @@
   <table name="Chassis" title="Physical Network Hypervisor and Gateway Information">
     <p>
       Each row in this table represents a hypervisor or gateway (a chassis) in
-      the physical network (PN).  Each chassis, via
-      <code>ovn-controller</code>/<code>ovn-controller-vtep</code>, adds
-      and updates its own row, and keeps a copy of the remaining rows to
-      determine how to reach other hypervisors.
+      the physical network (PN). <code>ovn-controller</code> running on each
+      chassis expects the row pertaining to it to be added by an
+      Administrator. Unless <code>ovn-controller</code> finds its row
+      in this table, it will not translate the logical flows to OF flows.
+      <code>ovn-controller-vtep</code>, adds
+      and updates its own row. Each chassis keeps a copy of the remaining rows
+      to determine how to reach other hypervisors.
     </p>
 
     <p>
-      When a chassis shuts down gracefully, it should remove its own row.
-      (This is not critical because resources hosted on the chassis are equally
-      unreachable regardless of whether the row is present.)  If a chassis
-      shuts down permanently without removing its row, some kind of manual or
-      automatic cleanup is eventually needed; we can devise a process for that
-      as necessary.
+      When a chassis shuts down gracefully, Administrator should remove
+      the corresponding row. (This is not critical because resources hosted on
+      the chassis are equally unreachable regardless of whether the row is
+      present.).
     </p>
 
     <column name="name">
       OVN does not prescribe a particular format for chassis names.
-      ovn-controller populates this column using <ref key="system-id"
-      table="Open_vSwitch" column="external_ids" db="Open_vSwitch"/>
-      in the Open_vSwitch database's <ref table="Open_vSwitch"
-      db="Open_vSwitch"/> table.  ovn-controller-vtep populates this
-      column with <ref table="Physical_Switch" column="name"
-      db="hardware_vtep"/> in the hardware_vtep database's
+      ovn-controller-vtep populates this column with
+      <ref table="Physical_Switch" column="name" db="hardware_vtep"/> in the
+      hardware_vtep database's
       <ref table="Physical_Switch" db="hardware_vtep"/> table.
     </column>
 
     <column name="hostname">
-      The hostname of the chassis, if applicable.  ovn-controller will populate
-      this column with the hostname of the host it is running on.
-      ovn-controller-vtep will leave this column empty.
+      The hostname of the chassis, if applicable. ovn-controller-vtep will
+      leave this column empty.
     </column>
 
     <column name="nb_cfg">
@@ -215,26 +212,28 @@
     </column>
 
     <column name="external_ids" key="ovn-bridge-mappings">
-      <code>ovn-controller</code> populates this key with the set of bridge
-      mappings it has been configured to use.  Other applications should treat
-      this key as read-only.  See <code>ovn-controller</code>(8) for more
-      information.
+      <code>ovn-controller</code> expects this key to be populated with the set
+      of bridge mappings it has been configured to use. Other applications
+      could read this value to know the bridge mappings configued on this
+      chassis.
     </column>
 
     <column name="external_ids" key="datapath-type">
-      <code>ovn-controller</code> populates this key with the datapath type
-      configured in the <ref table="Bridge" column="datapath_type"/> column of
-      the Open_vSwitch database's <ref table="Bridge" db="Open_vSwitch"/>
-      table.  Other applications should treat this key as read-only. See
-      <code>ovn-controller</code>(8) for more information.
+      <code>ovn-controller</code> expects this key to be populated with the
+      datapath type configured in the
+      <ref table="Bridge" column="datapath_type"/> column of the Open_vSwitch
+      database's <ref table="Bridge" db="Open_vSwitch"/>
+      table. Other applications could read this value to know the datapath
+      type supported by this chassis.
     </column>
 
     <column name="external_ids" key="iface-types">
-      <code>ovn-controller</code> populates this key with the interface types
-      configured in the <ref table="Open_vSwitch" column="iface_types"/> column
-      of the Open_vSwitch database's <ref table="Open_vSwitch"
-      db="Open_vSwitch"/> table.  Other applications should treat this key as
-      read-only. See <code>ovn-controller</code>(8) for more information.
+      <code>ovn-controller</code> expects this key to be populated with the
+      interface types configured in the
+      <ref table="Open_vSwitch" column="iface_types"/> column of the
+      Open_vSwitch database's <ref table="Open_vSwitch"
+      db="Open_vSwitch"/> table.  Other applications could read this value to
+      know the interface types supported by this chassis.
     </column>
 
     <group title="Common Columns">
