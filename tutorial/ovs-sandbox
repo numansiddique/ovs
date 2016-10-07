@@ -369,6 +369,7 @@ if $ovn; then
     ovs-vsctl set open . external-ids:ovn-remote=unix:"$sandbox"/ovnsb_db.sock
     ovs-vsctl set open . external-ids:ovn-encap-type=geneve
     ovs-vsctl set open . external-ids:ovn-encap-ip=127.0.0.1
+    ovn-sbctl chassis-add 56b18105-5706-46ef-80c4-ff20979ab068 geneve,vxlan 127.0.0.1 sandbox
 
     ovn-nbctl init
     ovn-sbctl init
