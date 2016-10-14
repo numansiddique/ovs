@@ -178,14 +178,24 @@ ovn_init_symtab(struct shash *symtab)
     expr_symtab_add_field(symtab, "arp.tha", MFF_ARP_THA, "arp", false);
 
     expr_symtab_add_predicate(symtab, "nd",
-              "icmp6.type == {135, 136} && icmp6.code == 0 && ip.ttl == 255");
+              "icmp6.type == {133, 134, 135, 136} "
+              "&& icmp6.code == 0 && ip.ttl == 255");
+    expr_symtab_add_predicate(symtab, "nd_rs",
+              "icmp6.type == 133 && icmp6.code == 0 && ip.ttl == 255");
+    expr_symtab_add_predicate(symtab, "nd_ra",
+              "icmp6.type == 134 && icmp6.code == 0 && ip.ttl == 255");
     expr_symtab_add_predicate(symtab, "nd_ns",
               "icmp6.type == 135 && icmp6.code == 0 && ip.ttl == 255");
     expr_symtab_add_predicate(symtab, "nd_na",
               "icmp6.type == 136 && icmp6.code == 0 && ip.ttl == 255");
-    expr_symtab_add_field(symtab, "nd.target", MFF_ND_TARGET, "nd", false);
-    expr_symtab_add_field(symtab, "nd.sll", MFF_ND_SLL, "nd_ns", false);
-    expr_symtab_add_field(symtab, "nd.tll", MFF_ND_TLL, "nd_na", false);
+    expr_symtab_add_field(symtab, "nd.target", MFF_ND_TARGET,
+              "icmp6.type == {135, 136} "
+              "&& icmp6.code == 0 && ip.ttl == 255", false);
+    expr_symtab_add_field(symtab, "nd.sll", MFF_ND_SLL,
+              "icmp6.type == {133, 134, 135} "
+              "&& icmp6.code == 0 && ip.ttl == 255", false);
+    expr_symtab_add_field(symtab, "nd.tll", MFF_ND_TLL,
+              "icmp6.type == 136 && icmp6.code == 0 && ip.ttl == 255", false);
 
     expr_symtab_add_predicate(symtab, "tcp", "ip.proto == 6");
     expr_symtab_add_field(symtab, "tcp.src", MFF_TCP_SRC, "tcp", false);
