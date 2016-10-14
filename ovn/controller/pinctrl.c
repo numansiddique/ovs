@@ -75,7 +75,7 @@ static void send_garp_run(const struct ovsrec_bridge *,
                           struct hmap *local_datapaths);
 static void pinctrl_handle_nd(const struct flow *ip_flow,
                               const struct match *md,
-                              struct ofpbuf *userdata);
+                              struct ofpbuf *userdata, bool is_nd_na);
 static void reload_metadata(struct ofpbuf *ofpacts,
                             const struct match *md);
 
@@ -952,8 +952,11 @@ process_packet_in(const struct ofp_header *msg, struct controller_ctx *ctx)
         break;
 
     case ACTION_OPCODE_ND_NA:
+        pinctrl_handle_nd(&headers, &pin.flow_metadata, &userdata, true);
+        break;
+
     case ACTION_OPCODE_ND_RA:
-        pinctrl_handle_nd(&headers, &pin.flow_metadata, &userdata);
+        pinctrl_handle_nd(&headers, &pin.flow_metadata, &userdata, false);
         break;
 
     case ACTION_OPCODE_PUT_ND:
@@ -1738,7 +1741,7 @@ reload_metadata(struct ofpbuf *ofpacts, const struct match *md)
 
 static void
 pinctrl_handle_nd(const struct flow *ip_flow, const struct match *md,
-                  struct ofpbuf *userdata)
+                  struct ofpbuf *userdata, bool is_nd_na)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     /* This action only works for IPv6 ND packets, and only Neighbor
@@ -1756,13 +1759,15 @@ pinctrl_handle_nd(const struct flow *ip_flow, const struct match *md,
     enum ofp_version version = rconn_get_version(swconn);
     enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
 
-    bool as_nd_na = ip_flow->tp_src == htons(ND_NEIGHBOR_SOLICIT);
-    int packet_stub_size = as_nd_na ? 128 : 256;
+    int packet_stub_size = is_nd_na ? 128 : 256;
     uint64_t packet_stub[packet_stub_size / 8];
     struct dp_packet packet;
     dp_packet_use_stub(&packet, packet_stub, sizeof packet_stub);
 
-    if (as_nd_na) {
+    if (is_nd_na) {
+        if (ip_flow->tp_src != htons(ND_NEIGHBOR_SOLICIT)) {
+            goto exit;
+        }
         /* xxx These flags are not exactly correct.  Look at section 7.2.4
          * xxx of RFC 4861.  For example, we need to set ND_RSO_ROUTER for
          * xxx router's interfaces and ND_RSO_SOLICITED only if it was
@@ -1771,20 +1776,95 @@ pinctrl_handle_nd(const struct flow *ip_flow, const struct match *md,
                       &ip_flow->nd_target, &ip_flow->ipv6_src,
                       htonl(ND_RSO_SOLICITED | ND_RSO_OVERRIDE));
     } else {
-        /* xxx Using hardcode data to compose RA packet.
-         * xxx The following patch should fix this. */
-        uint8_t cur_hop_limit = 64;
+        if (ip_flow->tp_src != htons(ND_ROUTER_SOLICIT)) {
+            goto exit;
+        }
+
+        ovs_be16 *args_len_p = ofpbuf_try_pull(userdata, sizeof(ovs_be16));
+        if (!args_len_p) {
+            goto exit;
+        }
+
+        uint16_t args_len = ntohs(*args_len_p);
+        if (!args_len || args_len > userdata->size) {
+            goto exit;
+        }
+
         uint8_t mo_flags = 0;
-        ovs_be16 router_lifetime = 0xffff;
-        ovs_be32 reachable_time = 0;
-        ovs_be32 retrans_timer = 0;
+        struct eth_addr sll = eth_addr_zero;
         ovs_be32 mtu = 0;
 
+        struct prefix_data {
+            uint8_t prefix_len;
+            ovs_be128 prefix;
+        };
+
+        struct prefix_data *prefixes = NULL;
+        int num_prefixes = 0;
+
+        while (userdata->size - args_len > 0) {
+            struct ipv6_nd_ra_opt_header *opt =
+                ofpbuf_try_pull(userdata, sizeof(*opt));
+
+            uint16_t opt_len = ntohs(opt->len);
+            if (!opt_len) {
+                break;
+            }
+
+            uint8_t *opt_data = ofpbuf_try_pull(userdata, opt_len);
+            if (!opt_data) {
+                break;
+            }
+
+            switch(ntohs(opt->opcode)) {
+            case ACTION_OPCODE_PUT_ND_RA_ADDR_MODE:
+                mo_flags = *opt_data;
+                break;
+
+            case ACTION_OPCODE_PUT_ND_OPT_SLL:
+                if (opt_len == sizeof(struct eth_addr)) {
+                    memcpy(&sll, opt_data, sizeof(struct eth_addr));
+                }
+                break;
+
+            case ACTION_OPCODE_PUT_ND_OPT_MTU:
+                if (opt_len == sizeof(ovs_be32)) {
+                    mtu = *(ALIGNED_CAST(const ovs_be32 *, opt_data));
+                }
+                break;
+
+            case ACTION_OPCODE_PUT_ND_OPT_PREFIX:
+                if (opt_len == (sizeof(uint8_t) + sizeof(ovs_be128))) {
+                    prefixes = xrealloc(
+                        prefixes, sizeof(*prefixes) * (num_prefixes + 1));
+                    prefixes[num_prefixes].prefix_len = *opt_data++;
+                    memcpy(&prefixes[num_prefixes].prefix, opt_data,
+                           sizeof(ovs_be128));
+                    num_prefixes++;
+                }
+                break;
+            }
+        }
+
+        if (eth_addr_is_zero(sll)) {
+            free(prefixes);
+            goto exit;
+        }
+
         compose_nd_ra(
-            &packet, ip_flow->dl_dst, ip_flow->dl_src,
-            &ip_flow->ipv6_dst, &ip_flow->ipv6_src,
-            cur_hop_limit, mo_flags, router_lifetime, reachable_time,
-            retrans_timer, mtu);
+            &packet, sll, ip_flow->dl_src, &ip_flow->ipv6_dst,
+            &ip_flow->ipv6_src, IPV6_ND_RA_CUR_HOP_LIMIT, mo_flags,
+            IPV6_ND_RA_LIFETIME, IPV6_ND_RA_REACHABLE_TIME,
+            IPV6_ND_RA_RETRANSMIT_TIMER, mtu);
+
+        for (int i = 0; i < num_prefixes; i++) {
+            packet_put_ra_prefix_opt(
+                &packet, prefixes[i].prefix_len, IPV6_ND_RA_OPT_PREFIX_FLAGS,
+                IPV6_ND_RA_OPT_PREFIX_VALID_LIFETIME,
+                IPV6_ND_RA_OPT_PREFIX_PREFERRED_LIFETIME, prefixes[i].prefix);
+        }
+
+        free(prefixes);
     }
 
     /* Reload previous packet metadata. */

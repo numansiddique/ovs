@@ -968,9 +968,45 @@ nd_na { eth.src = 12:34:56:78:9a:bc; nd.tll = 12:34:56:78:9a:bc; outport = inpor
     has prereqs nd_ns
 
 # nd_ra
-nd_ra{eth.src = 12:34:56:78:9a:bc; ip6.src = fdad:1234:5678::1; outport = inport; flags.loopback = 1; output;};
+nd_ra { eth.src = 12:34:56:78:9a:bc; ip6.src = fdad:1234:5678::1; outport = inport; flags.loopback = 1; output;};
     formats as nd_ra { eth.src = 12:34:56:78:9a:bc; ip6.src = fdad:1234:5678::1; outport = inport; flags.loopback = 1; output; };
-    encodes as controller(userdata=00.00.00.07.00.00.00.00.00.19.00.10.80.00.08.06.12.34.56.78.9a.bc.00.00.00.19.00.18.80.00.34.10.fd.ad.12.34.56.78.00.00.00.00.00.00.00.00.00.01.ff.ff.00.18.00.00.23.20.00.06.00.20.00.00.00.00.00.01.1c.04.00.01.1e.04.ff.ff.00.18.00.00.23.20.00.07.00.00.00.01.14.04.00.00.00.00.00.00.00.01.ff.ff.00.10.00.00.23.20.00.0e.ff.f8.40.00.00.00)
+    encodes as controller(userdata=00.00.00.07.00.00.00.00.00.00.00.19.00.10.80.00.08.06.12.34.56.78.9a.bc.00.00.00.19.00.18.80.00.34.10.fd.ad.12.34.56.78.00.00.00.00.00.00.00.00.00.01.ff.ff.00.18.00.00.23.20.00.06.00.20.00.00.00.00.00.01.1c.04.00.01.1e.04.ff.ff.00.18.00.00.23.20.00.07.00.00.00.01.14.04.00.00.00.00.00.00.00.01.ff.ff.00.10.00.00.23.20.00.0e.ff.f8.40.00.00.00)
+    has prereqs nd_rs
+nd_ra { put_nd_ra_addr_mode("slaac");};
+    formats as nd_ra { put_nd_ra_addr_mode("slaac"); };
+    encodes as controller(userdata=00.00.00.07.00.00.00.00.00.05.00.08.00.01.00)
+    has prereqs nd_rs
+nd_ra { put_nd_ra_addr_mode("dhcpv6_stateful");};
+    formats as nd_ra { put_nd_ra_addr_mode("dhcpv6_stateful"); };
+    encodes as controller(userdata=00.00.00.07.00.00.00.00.00.05.00.08.00.01.80)
+    has prereqs nd_rs
+nd_ra { put_nd_ra_addr_mode("dhcpv6_stateless");};
+    formats as nd_ra { put_nd_ra_addr_mode("dhcpv6_stateless"); };
+    encodes as controller(userdata=00.00.00.07.00.00.00.00.00.05.00.08.00.01.40)
+    has prereqs nd_rs
+nd_ra { put_nd_ra_addr_mode("foo");};
+    Syntax error at `"foo"' Invalid ND RA mode value.
+nd_ra { put_nd_ra_addr_mode(foo);};
+    Syntax error at `foo' expecting string field.
+
+nd_ra { put_nd_opt_sll(12:34:56:78:9a:bc); put_nd_opt_mtu(1280); put_nd_opt_prefix(fdad:1234:5678::/64);};
+    formats as nd_ra { put_nd_opt_sll(12:34:56:78:9a:bc); put_nd_opt_mtu(1280); put_nd_opt_prefix(fdad:1234:5678::/64); };
+    encodes as controller(userdata=00.00.00.07.00.00.00.00.00.27.00.09.00.06.12.34.56.78.9a.bc.00.0a.00.04.00.00.05.00.00.0b.00.11.40.fd.ad.12.34.56.78.00.00.00.00.00.00.00.00.00.00)
+    has prereqs nd_rs
+nd_ra { put_nd_opt_sll(foo);};
+    Syntax error at `foo' expecting ether address.
+nd_ra { put_nd_opt_sll(12:34:56:78:9a);};
+    Invalid numeric constant.
+nd_ra { put_nd_opt_mtu(foo);};
+    Syntax error at `foo' expecting decimal integer.
+nd_ra { put_nd_opt_prefix(foo);};
+    Syntax error at `foo' Invalid IPv6 prefix.
+nd_ra { put_nd_opt_prefix(aef0::/130);};
+    Value and mask have incompatible formats.
+
+nd_ra { eth.dst = eth.src; put_nd_opt_sll(12:34:56:78:9a:bc); put_nd_opt_mtu(1280); put_nd_opt_prefix(fdad:1234:5678::/64); put_nd_opt_prefix(aef0::/64); eth.src = 12:34:56:78:9a:bc; nd.tll = 12:34:56:78:9a:bc; outport = inport; inport = ""; /* Allow sending out inport. */ output;};
+    formats as nd_ra { eth.dst = eth.src; put_nd_opt_sll(12:34:56:78:9a:bc); put_nd_opt_mtu(1280); put_nd_opt_prefix(fdad:1234:5678::/64); put_nd_opt_prefix(aef0::/64); eth.src = 12:34:56:78:9a:bc; nd.tll = 12:34:56:78:9a:bc; outport = inport; inport = ""; output; };
+    encodes as controller(userdata=00.00.00.07.00.00.00.00.00.3c.00.09.00.06.12.34.56.78.9a.bc.00.0a.00.04.00.00.05.00.00.0b.00.11.40.fd.ad.12.34.56.78.00.00.00.00.00.00.00.00.00.00.00.0b.00.11.40.ae.f0.00.00.00.00.00.00.00.00.00.00.00.00.00.00.ff.ff.00.18.00.00.23.20.00.06.00.30.00.00.00.00.00.00.04.06.00.00.02.06.00.19.00.10.80.00.08.06.12.34.56.78.9a.bc.00.00.00.19.00.10.80.00.42.06.12.34.56.78.9a.bc.00.00.ff.ff.00.18.00.00.23.20.00.06.00.20.00.00.00.00.00.01.1c.04.00.01.1e.04.00.19.00.10.00.01.1c.04.00.00.00.00.00.00.00.00.ff.ff.00.10.00.00.23.20.00.0e.ff.f8.40.00.00.00)
     has prereqs nd_rs
 
 # get_nd

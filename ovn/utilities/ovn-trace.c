@@ -1810,6 +1810,10 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
 
         case OVNACT_PUT_ARP:
         case OVNACT_PUT_ND:
+        case OVNACT_PUT_ND_RA_ADDR_MODE:
+        case OVNACT_PUT_ND_OPT_PREFIX:
+        case OVNACT_PUT_ND_OPT_SLL:
+        case OVNACT_PUT_ND_OPT_MTU:
             /* Nothing to do for tracing. */
             break;
 

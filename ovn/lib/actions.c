@@ -21,6 +21,7 @@
 #include "byte-order.h"
 #include "compiler.h"
 #include "ovn-dhcp.h"
+#include "ovn-util.h"
 #include "hash.h"
 #include "logical-fields.h"
 #include "nx-match.h"
@@ -1234,7 +1235,46 @@ encode_ND_RA(const struct ovnact_nest *on,
              const struct ovnact_encode_params *ep,
              struct ofpbuf *ofpacts)
 {
-    encode_nested_neighbor_actions(on, ep, ACTION_OPCODE_ND_RA, ofpacts);
+    uint64_t inner_ofpacts_stub[1024 / 8];
+    uint64_t inner_args_stub[1024 / 8];
+    struct ofpbuf inner_args = OFPBUF_STUB_INITIALIZER(inner_args_stub);
+    struct ofpbuf inner_ofpacts = OFPBUF_STUB_INITIALIZER(inner_ofpacts_stub);
+    const struct ovnact *a;
+    OVNACT_FOR_EACH (a, on->nested, on->nested_len) {
+        if (a->type == OVNACT_PUT_ND_RA_ADDR_MODE) {
+            encode_PUT_ND_RA_ADDR_MODE(
+                (const struct ovnact_put_nd_ra_addr_mode *)a, ep,
+                &inner_args);
+        } else if (a->type == OVNACT_PUT_ND_OPT_SLL) {
+            encode_PUT_ND_OPT_SLL(
+                (const struct ovnact_put_nd_opt_sll *)a, ep, &inner_args);
+        } else if (a->type == OVNACT_PUT_ND_OPT_MTU) {
+            encode_PUT_ND_OPT_MTU(
+                (const struct ovnact_put_nd_opt_mtu *)a, ep, &inner_args);
+        } else if (a->type == OVNACT_PUT_ND_OPT_PREFIX) {
+            encode_PUT_ND_OPT_PREFIX(
+                (const struct ovnact_put_nd_opt_prefix *)a, ep, &inner_args);
+        } else {
+            ovnact_encode(a, ep, &inner_ofpacts);
+        }
+    }
+    ovs_be16 inner_args_size = inner_args.size ? htons(inner_args.size) : 0;
+
+    /* Add a "controller" action with the data and actions parsed from nested
+     * actions inside "{...}", converted to OpenFlow, as its userdata.
+     * ovn-controller will convert the packet to RA and then send the packet
+     * and actions back to the switch inside an OFPT_PACKET_OUT message. */
+    size_t oc_offset = encode_start_controller_op(ACTION_OPCODE_ND_RA,
+                                                  false, ofpacts);
+    ofpbuf_put(ofpacts, &inner_args_size, sizeof(ovs_be16));
+    ofpbuf_put(ofpacts, inner_args.data, inner_args.size);
+    ofpacts_put_openflow_actions(inner_ofpacts.data, inner_ofpacts.size,
+                                 ofpacts, OFP13_VERSION);
+    encode_finish_controller_op(oc_offset, ofpacts);
+
+    /* Free memory. */
+    ofpbuf_uninit(&inner_args);
+    ofpbuf_uninit(&inner_ofpacts);
 }
 
 static void
@@ -1811,7 +1851,191 @@ parse_set_action(struct action_context *ctx)
         lexer_syntax_error(ctx->lexer, "expecting `=' or `<->'");
     }
 }
+
+/* Parse put_nd_ra, put_nd_opt_sll, put_nd_prefix, put_nd_mtu action. */
+static void
+parse_put_nd_ra_addr_mode(struct action_context *ctx,
+                          struct ovnact_put_nd_ra_addr_mode *put_ra_mode)
+{
+    lexer_force_match(ctx->lexer, LEX_T_LPAREN);
+    if (ctx->lexer->token.type != LEX_T_STRING) {
+        lexer_syntax_error(ctx->lexer, "expecting string field");
+        return;
+    }
 
+    if (!strcmp(ctx->lexer->token.s, "slaac")) {
+        put_ra_mode->mode_flags = 0;
+    } else if (!strcmp(ctx->lexer->token.s, "dhcpv6_stateful")) {
+        put_ra_mode->mode_flags = IPV6_ND_RA_FLAG_MANAGED_ADDR_CONFIG;
+    } else if (!strcmp(ctx->lexer->token.s, "dhcpv6_stateless")) {
+        put_ra_mode->mode_flags = IPV6_ND_RA_FLAG_OTHER_ADDR_CONFIG;
+    } else {
+        lexer_syntax_error(ctx->lexer, "Invalid ND RA mode value");
+        return;
+    }
+
+    lexer_get(ctx->lexer);
+    lexer_force_match(ctx->lexer, LEX_T_RPAREN);
+}
+
+static void
+parse_put_nd_opt_prefix(struct action_context *ctx,
+                        struct ovnact_put_nd_opt_prefix *prefix)
+{
+    lexer_force_match(ctx->lexer, LEX_T_LPAREN);
+    if (!lexer_match(ctx->lexer, LEX_T_MASKED_INTEGER) ||
+            ctx->lexer->token.format != LEX_F_IPV6 ||
+            !ipv6_is_cidr(&ctx->lexer->token.mask.ipv6)) {
+        lexer_syntax_error(ctx->lexer, "Invalid IPv6 prefix");
+        return;
+    }
+
+    prefix->prefix_len = ipv6_count_cidr_bits(&ctx->lexer->token.mask.ipv6);
+    memcpy(&prefix->prefix, &ctx->lexer->token.value.be128_int,
+           sizeof(ovs_be128));
+    lexer_force_match(ctx->lexer, LEX_T_RPAREN);
+}
+
+static void
+parse_put_nd_opt_sll(struct action_context *ctx,
+                     struct ovnact_put_nd_opt_sll *sll)
+{
+    lexer_force_match(ctx->lexer, LEX_T_LPAREN);
+    if (!lexer_match(ctx->lexer, LEX_T_INTEGER)
+        || ctx->lexer->token.format != LEX_F_ETHERNET) {
+        lexer_syntax_error(ctx->lexer, "expecting ether address");
+    }
+    sll->mac = ctx->lexer->token.value.mac;
+    lexer_force_match(ctx->lexer, LEX_T_RPAREN);
+}
+static void
+parse_put_nd_opt_mtu(struct action_context *ctx,
+                     struct ovnact_put_nd_opt_mtu *mtu)
+{
+    lexer_force_match(ctx->lexer, LEX_T_LPAREN);
+    if (!lexer_match(ctx->lexer, LEX_T_INTEGER)
+        || ctx->lexer->token.format != LEX_F_DECIMAL) {
+        lexer_syntax_error(ctx->lexer, "expecting decimal integer");
+    }
+    mtu->mtu = ctx->lexer->token.value.be32_int;
+    lexer_force_match(ctx->lexer, LEX_T_RPAREN);
+}
+
+static void
+format_PUT_ND_RA_ADDR_MODE(const struct ovnact_put_nd_ra_addr_mode *ra, struct ds *s)
+{
+    if (ra->mode_flags == 0) {
+        ds_put_cstr(s, "put_nd_ra_addr_mode(\"slaac\");");
+    } else if(ra->mode_flags == IPV6_ND_RA_FLAG_MANAGED_ADDR_CONFIG) {
+        ds_put_cstr(s, "put_nd_ra_addr_mode(\"dhcpv6_stateful\");");
+    } else {
+        ds_put_cstr(s, "put_nd_ra_addr_mode(\"dhcpv6_stateless\");");
+    }
+}
+
+static void
+format_PUT_ND_OPT_PREFIX(const struct ovnact_put_nd_opt_prefix *p,
+                         struct ds *s)
+{
+    ds_put_cstr(s, "put_nd_opt_prefix(");
+    const struct in6_addr *ip6_addr = (const struct in6_addr *)&p->prefix;
+    //ipv6_format_addr(CONST_CAST(const struct in6_addr *, p->prefix), s);
+    ipv6_format_addr(ip6_addr, s);
+    ds_put_format(s,"/%d);", p->prefix_len);
+}
+
+static void
+format_PUT_ND_OPT_SLL(const struct ovnact_put_nd_opt_sll *sll, struct ds *s)
+{
+    ds_put_cstr(s, "put_nd_opt_sll(");
+    ds_put_format(s, ETH_ADDR_FMT");", ETH_ADDR_ARGS(sll->mac));
+}
+
+static void
+format_PUT_ND_OPT_MTU(const struct ovnact_put_nd_opt_mtu *mtu, struct ds *s)
+{
+    ds_put_format(s, "put_nd_opt_mtu(%u);", ntohl(mtu->mtu));
+}
+
+static void
+encode_PUT_ND_RA_ADDR_MODE(const struct ovnact_put_nd_ra_addr_mode *ra,
+                 const struct ovnact_encode_params *ep OVS_UNUSED,
+                 struct ofpbuf *ofpacts)
+{
+    struct ipv6_nd_ra_opt_header opt = {
+        .opcode = htons(ACTION_OPCODE_PUT_ND_RA_ADDR_MODE),
+        .len = htons(sizeof(uint8_t)),
+    };
+    ofpbuf_put(ofpacts, &opt, sizeof opt);
+    ofpbuf_put(ofpacts, &ra->mode_flags, sizeof(uint8_t));
+}
+
+static void
+encode_PUT_ND_OPT_PREFIX(const struct ovnact_put_nd_opt_prefix *prefix,
+                         const struct ovnact_encode_params *ep OVS_UNUSED,
+                         struct ofpbuf *ofpacts)
+{
+    struct ipv6_nd_ra_opt_header opt = {
+        .opcode = htons(ACTION_OPCODE_PUT_ND_OPT_PREFIX),
+        .len = htons(sizeof(uint8_t) + sizeof(ovs_be128)),
+    };
+    ofpbuf_put(ofpacts, &opt, sizeof opt);
+    ofpbuf_put(ofpacts, &prefix->prefix_len, sizeof(uint8_t));
+    ofpbuf_put(ofpacts, &prefix->prefix, sizeof(ovs_be128));
+}
+
+static void
+encode_PUT_ND_OPT_SLL(const struct ovnact_put_nd_opt_sll *sll,
+                      const struct ovnact_encode_params *ep OVS_UNUSED,
+                      struct ofpbuf *ofpacts)
+{
+    struct ipv6_nd_ra_opt_header opt = {
+        .opcode = htons(ACTION_OPCODE_PUT_ND_OPT_SLL),
+        .len = htons(sizeof(struct eth_addr)),
+    };
+    ofpbuf_put(ofpacts, &opt, sizeof opt);
+    ofpbuf_put(ofpacts, &sll->mac, sizeof(struct eth_addr));
+}
+
+static void
+encode_PUT_ND_OPT_MTU(const struct ovnact_put_nd_opt_mtu *mtu,
+                      const struct ovnact_encode_params *ep OVS_UNUSED,
+                      struct ofpbuf *ofpacts)
+{
+    struct ipv6_nd_ra_opt_header opt = {
+        .opcode = htons(ACTION_OPCODE_PUT_ND_OPT_MTU),
+        .len = htons(sizeof(uint32_t)),
+    };
+    ofpbuf_put(ofpacts, &opt, sizeof opt);
+    ofpbuf_put(ofpacts, &mtu->mtu, sizeof(ovs_be32));
+}
+
+static void
+ovnact_put_nd_ra_addr_mode_free(
+    struct ovnact_put_nd_ra_addr_mode *nd_ra OVS_UNUSED)
+{
+
+}
+
+static void
+ovnact_put_nd_opt_sll_free(struct ovnact_put_nd_opt_sll *nd_opt_sll OVS_UNUSED)
+{
+
+}
+
+static void
+ovnact_put_nd_opt_mtu_free(struct ovnact_put_nd_opt_mtu *nd_opt_mtu OVS_UNUSED)
+{
+
+}
+
+static void
+ovnact_put_nd_opt_prefix_free(
+    struct ovnact_put_nd_opt_prefix *nd_opt_prefix OVS_UNUSED)
+{
+
+}
+
 static bool
 parse_action(struct action_context *ctx)
 {
@@ -1850,6 +2074,16 @@ parse_action(struct action_context *ctx)
         parse_ND_NA(ctx);
     } else if (lexer_match_id(ctx->lexer, "nd_ra")) {
         parse_ND_RA(ctx);
+    } else if (lexer_match_id(ctx->lexer, "put_nd_ra_addr_mode")) {
+        parse_put_nd_ra_addr_mode(ctx,
+                                  ovnact_put_PUT_ND_RA_ADDR_MODE(ctx->ovnacts));
+    } else if (lexer_match_id(ctx->lexer, "put_nd_opt_prefix")) {
+        parse_put_nd_opt_prefix(ctx,
+                                ovnact_put_PUT_ND_OPT_PREFIX(ctx->ovnacts));
+    } else if (lexer_match_id(ctx->lexer, "put_nd_opt_sll")) {
+        parse_put_nd_opt_sll(ctx, ovnact_put_PUT_ND_OPT_SLL(ctx->ovnacts));
+    } else if (lexer_match_id(ctx->lexer, "put_nd_opt_mtu")) {
+        parse_put_nd_opt_mtu(ctx, ovnact_put_PUT_ND_OPT_MTU(ctx->ovnacts));
     } else if (lexer_match_id(ctx->lexer, "get_arp")) {
         parse_get_mac_bind(ctx, 32, ovnact_put_GET_ARP(ctx->ovnacts));
     } else if (lexer_match_id(ctx->lexer, "put_arp")) {
@@ -1989,7 +2223,7 @@ ovnacts_format(const struct ovnact *ovnacts, size_t ovnacts_len,
 
 /* Encoding ovnacts to OpenFlow. */
 
-static void
+void
 ovnact_encode(const struct ovnact *a, const struct ovnact_encode_params *ep,
               struct ofpbuf *ofpacts)
 {

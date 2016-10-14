@@ -67,4 +67,26 @@ char *alloc_nat_zone_key(const struct uuid *key, const char *type);
 const char *default_nb_db(void);
 const char *default_sb_db(void);
 
+
+/* Default values of various IPv6 Neighbor Discovery protocol options and flags.
+ * See RFC 4861 for more information.
+ * */
+#define IPV6_ND_RA_FLAG_MANAGED_ADDR_CONFIG         0x80
+#define IPV6_ND_RA_FLAG_OTHER_ADDR_CONFIG           0x40
+
+#define IPV6_ND_RA_CUR_HOP_LIMIT                    255
+#define IPV6_ND_RA_LIFETIME                         0xffff
+#define IPV6_ND_RA_REACHABLE_TIME                   0
+#define IPV6_ND_RA_RETRANSMIT_TIMER                 0
+
+#define IPV6_ND_RA_OPT_PREFIX_FLAGS                 0xc0
+#define IPV6_ND_RA_OPT_PREFIX_VALID_LIFETIME        0xffffffff
+#define IPV6_ND_RA_OPT_PREFIX_PREFERRED_LIFETIME    0xffffffff
+
+OVS_PACKED(
+struct ipv6_nd_ra_opt_header {
+    ovs_be16 opcode; /* One of ACTION_OPCODE_PUT_ND_* */
+    ovs_be16 len;
+});
+
 #endif

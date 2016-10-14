@@ -1324,12 +1324,78 @@
           </ul>
 
           <p>
-            The ND packet has the same VLAN header, if any, as the IPv6 packet
-            it replaces.
+            The 'nd_ra' action supports the following inner actions.
           </p>
+
+          <dl>
+            <dt>
+              <code>put_nd_ra_addr_mode(<var>M</var>);</code>
+            </dt>
+
+            <dd>
+              <p>
+                 <b>Parameters</b>: Address mode string field <var>M</var>.
+              </p>
+              <p>
+                Puts the IPv6 address configuration mode defined in the
+                paramater <var>M</var> in the RA flags. <var>M</var> can be
+                "slaac", "dhcpv6_stateful" or "dhcpv6_stateless".
+              </p>
+            </dd>
+
+            <dt>
+              <code>put_nd_opt_mtu(<var>M</var>);</code>
+            </dt>
+
+            <dd>
+              <p>
+                 <b>Parameters</b>: MTU int field <var>M</var>.
+              </p>
+
+              <p>
+                Puts the ICMPv6 MTU (type 5) option in the RA packet.
+              </p>
+            </dd>
+
+            <dt>
+              <code>put_nd_opt_sll(<var>M</var>);</code>
+            </dt>
+
+            <dd>
+              <p>
+                 <b>Parameters</b>: Link layer address <var>M</var>.
+              </p>
+
+              <p>
+                Puts the ICMPv6 source link layer address (type 1) option in
+                the RA packet.
+              </p>
+            </dd>
+
+            <dt>
+              <code>put_nd_opt_prefix(<var>M</var>);</code>
+            </dt>
+
+            <dd>
+              <p>
+                 <b>Parameters</b>: IPv6 prefix and prefix length as a
+                 string field <var>M</var>.
+              </p>
+
+              <p>
+                Puts the ICMPv6 prefix information (type 3) option in the RA
+                packet.
+              </p>
+            </dd>
+          </dl>
 
           <p>
             <b>Prerequisite:</b> <code>nd_rs</code>
+          </p>
+
+          <p>
+            <b>Example:</b>
+            <code>nd_ra{put_nd_ra_addr_mode("slaac"); put_nd_opt_mtu(1450); put_nd_opt_sll(f0:00:00:00:01:10); put_nd_opt_prefix(aef0::/64); eth.src = eth.dst; outport=inport; output;};</code>
           </p>
         </dd>
 

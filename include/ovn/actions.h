@@ -72,7 +72,11 @@ struct simap;
     OVNACT(PUT_DHCPV4_OPTS, ovnact_put_dhcp_opts)   \
     OVNACT(PUT_DHCPV6_OPTS, ovnact_put_dhcp_opts)   \
     OVNACT(SET_QUEUE,       ovnact_set_queue)       \
-    OVNACT(DNS_LOOKUP,      ovnact_dns_lookup)
+    OVNACT(DNS_LOOKUP,      ovnact_dns_lookup)      \
+    OVNACT(PUT_ND_RA_ADDR_MODE, ovnact_put_nd_ra_addr_mode)  \
+    OVNACT(PUT_ND_OPT_SLL,  ovnact_put_nd_opt_sll)  \
+    OVNACT(PUT_ND_OPT_MTU,  ovnact_put_nd_opt_mtu)  \
+    OVNACT(PUT_ND_OPT_PREFIX, ovnact_put_nd_opt_prefix)
 
 /* enum ovnact_type, with a member OVNACT_<ENUM> for each action. */
 enum OVS_PACKED_ENUM ovnact_type {
@@ -266,6 +270,31 @@ struct ovnact_dns_lookup {
     struct expr_field dst;      /* 1-bit destination field. */
 };
 
+/* OVNACT_PUT_ND_RA_MODE. */
+struct ovnact_put_nd_ra_addr_mode {
+    struct ovnact ovnact;
+    uint8_t mode_flags; /* MO flags */
+};
+
+/* OVNACT_PUT_ND_OPT_SLL. */
+struct ovnact_put_nd_opt_sll {
+    struct ovnact ovnact;
+    struct eth_addr mac;
+};
+
+/* OVNACT_PUT_ND_OPT_MTU. */
+struct ovnact_put_nd_opt_mtu {
+    struct ovnact ovnact;
+    ovs_be32 mtu;
+};
+
+/* OVNACT_PUT_ND_OPT_PREFIX. */
+struct ovnact_put_nd_opt_prefix {
+    struct ovnact ovnact;
+    uint8_t prefix_len;
+    ovs_be128 prefix;
+};
+
 /* Internal use by the helpers below. */
 void ovnact_init(struct ovnact *, enum ovnact_type, size_t len);
 void *ovnact_put(struct ofpbuf *, enum ovnact_type, size_t len);
@@ -407,6 +436,36 @@ enum action_opcode {
      * The actions, in OpenFlow 1.3 format, follow the action_header.
      */
     ACTION_OPCODE_ND_RA,
+
+    /* "put_nd_ra_addr_mode(mode)".
+     *
+     * Specific inner action for ACTION_OPCODE_ND_RA. Arguments in this format:
+     *   - mode_flag: 8-bit unsigned integer for Managed address configuration flag
+     *         and Other configuration flag. (including 6-bit reserved 0)
+     */
+    ACTION_OPCODE_PUT_ND_RA_ADDR_MODE,
+
+    /* "put_nd_opt_sll(mac)".
+     *
+     * Specific inner action for ACTION_OPCODE_ND_RA. Arguments in this format:
+     *   - mac: 48-bit ethernet address.
+     */
+    ACTION_OPCODE_PUT_ND_OPT_SLL,
+
+    /* "put_nd_opt_mtu(mtu)".
+     *
+     * Specific inner action for ACTION_OPCODE_ND_RA. Arguments in this format:
+     *   - mtu: 32-bit unsigned integer MTU.
+     */
+    ACTION_OPCODE_PUT_ND_OPT_MTU,
+
+    /* "put_nd_opt_prefix(plen, prefix)".
+     *
+     * Specific inner action for ACTION_OPCODE_ND_RA. Arguments in this format:
+     *   - plen: 8-bit unsigned integer for prefix length.
+     *   - prefix: 128-bit IPv6 address.
+     */
+    ACTION_OPCODE_PUT_ND_OPT_PREFIX,
 };
 
 /* Header. */
@@ -498,6 +557,9 @@ struct ovnact_encode_params {
     uint8_t mac_bind_ptable;    /* OpenFlow table for 'get_arp'/'get_nd' to
                                    resubmit. */
 };
+
+void ovnact_encode(const struct ovnact *a, const struct ovnact_encode_params *ep,
+                   struct ofpbuf *ofpacts);
 
 void ovnacts_encode(const struct ovnact[], size_t ovnacts_len,
                     const struct ovnact_encode_params *,
