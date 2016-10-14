@@ -1292,6 +1292,47 @@
           </p>
         </dd>
 
+        <dt>
+          <code>nd_ra { <var>action</var>; </code>...<code> };</code>
+        </dt>
+
+        <dd>
+          <p>
+            Temporarily replaces the IPv6 router solicitation (RS) packet
+            being processed by an IPv6 router advertisement (RA)
+            packet and executes each nested <var>action</var> on the RA
+            packet.  Actions following the <code>nd_ra</code> action,
+            if any, apply to the original, unmodified packet.
+          </p>
+
+          <p>
+            The RA packet that this action operates on is initialized based on
+            the IPv6 packet being processed, as follows. These are default
+            values that the nested actions will probably want to change:
+          </p>
+
+          <ul>
+            <li><code>eth.dst</code> copied from <code>eth.src</code></li>
+            <li><code>eth.src</code> replaced by new value</li>
+            <li><code>eth.type = 0x86dd</code></li>
+            <li><code>ip6.dst</code> copied from <code>ip6.src</code></li>
+            <li><code>ip6.src</code> replaced by new value</li>
+            <li><code>icmp6.type = 134</code> (Router Advertisement)</li>
+            <li><code>nd.target</code> unchanged</li>
+            <li><code>nd.tll = 00:00:00:00:00:00</code></li>
+            <li><code>nd.sll</code> replaced by new value</li>
+          </ul>
+
+          <p>
+            The ND packet has the same VLAN header, if any, as the IPv6 packet
+            it replaces.
+          </p>
+
+          <p>
+            <b>Prerequisite:</b> <code>nd_rs</code>
+          </p>
+        </dd>
+
         <dt><code>get_nd(<var>P</var>, <var>A</var>);</code></dt>
 
         <dd>

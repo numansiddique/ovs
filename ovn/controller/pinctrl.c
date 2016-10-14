@@ -73,9 +73,9 @@ static void send_garp_run(const struct ovsrec_bridge *,
                           const struct sbrec_chassis *,
                           const struct lport_index *lports,
                           struct hmap *local_datapaths);
-static void pinctrl_handle_nd_na(const struct flow *ip_flow,
-                                 const struct match *md,
-                                 struct ofpbuf *userdata);
+static void pinctrl_handle_nd(const struct flow *ip_flow,
+                              const struct match *md,
+                              struct ofpbuf *userdata);
 static void reload_metadata(struct ofpbuf *ofpacts,
                             const struct match *md);
 
@@ -952,7 +952,8 @@ process_packet_in(const struct ofp_header *msg, struct controller_ctx *ctx)
         break;
 
     case ACTION_OPCODE_ND_NA:
-        pinctrl_handle_nd_na(&headers, &pin.flow_metadata, &userdata);
+    case ACTION_OPCODE_ND_RA:
+        pinctrl_handle_nd(&headers, &pin.flow_metadata, &userdata);
         break;
 
     case ACTION_OPCODE_PUT_ND:
@@ -1736,31 +1737,55 @@ reload_metadata(struct ofpbuf *ofpacts, const struct match *md)
 }
 
 static void
-pinctrl_handle_nd_na(const struct flow *ip_flow, const struct match *md,
-                     struct ofpbuf *userdata)
+pinctrl_handle_nd(const struct flow *ip_flow, const struct match *md,
+                  struct ofpbuf *userdata)
 {
-    /* This action only works for IPv6 ND packets, and the switch should only
-     * send us ND packets this way, but check here just to be sure. */
-    if (!is_nd(ip_flow, NULL)) {
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
-        VLOG_WARN_RL(&rl, "NA action on non-ND packet");
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+    /* This action only works for IPv6 ND packets, and only Neighbor
+     * Solicitation and Router Solicitation packets are supported.
+     * The switch should only send us ND packets this way, but check
+     * here just to be sure. */
+    if (!is_icmpv6(ip_flow, NULL)
+        || ip_flow->tp_dst != htons(0)
+        || (ip_flow->tp_src != htons(ND_NEIGHBOR_SOLICIT)
+            && ip_flow->tp_src != htons(ND_ROUTER_SOLICIT))) {
+        VLOG_WARN_RL(&rl, "ND action on invalid or unsupported packet");
         return;
     }
 
     enum ofp_version version = rconn_get_version(swconn);
     enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
 
-    uint64_t packet_stub[128 / 8];
+    bool as_nd_na = ip_flow->tp_src == htons(ND_NEIGHBOR_SOLICIT);
+    int packet_stub_size = as_nd_na ? 128 : 256;
+    uint64_t packet_stub[packet_stub_size / 8];
     struct dp_packet packet;
     dp_packet_use_stub(&packet, packet_stub, sizeof packet_stub);
 
-    /* xxx These flags are not exactly correct.  Look at section 7.2.4
-     * xxx of RFC 4861.  For example, we need to set ND_RSO_ROUTER for
-     * xxx router's interfaces and ND_RSO_SOLICITED only if it was
-     * xxx requested. */
-    compose_nd_na(&packet, ip_flow->dl_dst, ip_flow->dl_src,
-                  &ip_flow->nd_target, &ip_flow->ipv6_src,
-                  htonl(ND_RSO_SOLICITED | ND_RSO_OVERRIDE));
+    if (as_nd_na) {
+        /* xxx These flags are not exactly correct.  Look at section 7.2.4
+         * xxx of RFC 4861.  For example, we need to set ND_RSO_ROUTER for
+         * xxx router's interfaces and ND_RSO_SOLICITED only if it was
+         * xxx requested. */
+        compose_nd_na(&packet, ip_flow->dl_dst, ip_flow->dl_src,
+                      &ip_flow->nd_target, &ip_flow->ipv6_src,
+                      htonl(ND_RSO_SOLICITED | ND_RSO_OVERRIDE));
+    } else {
+        /* xxx Using hardcode data to compose RA packet.
+         * xxx The following patch should fix this. */
+        uint8_t cur_hop_limit = 64;
+        uint8_t mo_flags = 0;
+        ovs_be16 router_lifetime = 0xffff;
+        ovs_be32 reachable_time = 0;
+        ovs_be32 retrans_timer = 0;
+        ovs_be32 mtu = 0;
+
+        compose_nd_ra(
+            &packet, ip_flow->dl_dst, ip_flow->dl_src,
+            &ip_flow->ipv6_dst, &ip_flow->ipv6_src,
+            cur_hop_limit, mo_flags, router_lifetime, reachable_time,
+            retrans_timer, mtu);
+    }
 
     /* Reload previous packet metadata. */
     uint64_t ofpacts_stub[4096 / 8];
@@ -1772,7 +1797,7 @@ pinctrl_handle_nd_na(const struct flow *ip_flow, const struct match *md,
                                                       &ofpacts);
     if (error) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
-        VLOG_WARN_RL(&rl, "failed to parse actions for 'na' (%s)",
+        VLOG_WARN_RL(&rl, "failed to parse actions for 'nd' (%s)",
                      ofperr_to_string(error));
         goto exit;
     }

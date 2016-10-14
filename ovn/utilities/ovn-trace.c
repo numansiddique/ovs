@@ -1502,21 +1502,24 @@ execute_arp(const struct ovnact_nest *on, const struct ovntrace_datapath *dp,
 static void
 execute_nd_na(const struct ovnact_nest *on, const struct ovntrace_datapath *dp,
               const struct flow *uflow, uint8_t table_id,
-              enum ovnact_pipeline pipeline, struct ovs_list *super)
+              enum ovnact_pipeline pipeline, struct ovs_list *super,
+              bool is_neighbor_adv)
+
 {
     struct flow na_flow = *uflow;
 
-    /* Update fields for NA. */
+    /* Update fields for ND Router/Neighbor Advertisement. */
     na_flow.dl_src = uflow->dl_dst;
     na_flow.dl_dst = uflow->dl_src;
     na_flow.ipv6_dst = uflow->ipv6_src;
     na_flow.ipv6_src = uflow->nd_target;
-    na_flow.tp_src = htons(136);
+    na_flow.tp_src = is_neighbor_adv ? htons(136) : htons(134);
     na_flow.arp_sha = eth_addr_zero;
     na_flow.arp_tha = uflow->dl_dst;
 
     struct ovntrace_node *node = ovntrace_node_append(
-        super, OVNTRACE_NODE_TRANSFORMATION, "nd_na");
+        super, OVNTRACE_NODE_TRANSFORMATION,
+        (is_neighbor_adv ? "nd_na" : "nd_ra"));
 
     trace_actions(on->nested, on->nested_len, dp, &na_flow,
                   table_id, pipeline, &node->subs);
@@ -1792,8 +1795,9 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
             break;
 
         case OVNACT_ND_NA:
+	case OVNACT_ND_RA:
             execute_nd_na(ovnact_get_ND_NA(a), dp, uflow, table_id, pipeline,
-                          super);
+                           super, (a->type == OVNACT_ND_NA));
             break;
 
         case OVNACT_GET_ARP:

@@ -1137,6 +1137,12 @@ parse_CLONE(struct action_context *ctx)
 }
 
 static void
+parse_ND_RA(struct action_context *ctx)
+{
+    parse_nested_action(ctx, OVNACT_ND_RA, "nd_rs");
+}
+
+static void
 format_nested_action(const struct ovnact_nest *on, const char *name,
                      struct ds *s)
 {
@@ -1161,6 +1167,12 @@ static void
 format_CLONE(const struct ovnact_nest *nest, struct ds *s)
 {
     format_nested_action(nest, "clone", s);
+}
+
+static void
+format_ND_RA(const struct ovnact_nest *nest, struct ds *s)
+{
+    format_nested_action(nest, "nd_ra", s);
 }
 
 static void
@@ -1218,11 +1230,20 @@ encode_CLONE(const struct ovnact_nest *on,
 }
 
 static void
+encode_ND_RA(const struct ovnact_nest *on,
+             const struct ovnact_encode_params *ep,
+             struct ofpbuf *ofpacts)
+{
+    encode_nested_neighbor_actions(on, ep, ACTION_OPCODE_ND_RA, ofpacts);
+}
+
+static void
 ovnact_nest_free(struct ovnact_nest *on)
 {
     ovnacts_free(on->nested, on->nested_len);
     free(on->nested);
 }
+
 
 static void
 parse_get_mac_bind(struct action_context *ctx, int width,
@@ -1827,6 +1848,8 @@ parse_action(struct action_context *ctx)
         parse_ARP(ctx);
     } else if (lexer_match_id(ctx->lexer, "nd_na")) {
         parse_ND_NA(ctx);
+    } else if (lexer_match_id(ctx->lexer, "nd_ra")) {
+        parse_ND_RA(ctx);
     } else if (lexer_match_id(ctx->lexer, "get_arp")) {
         parse_get_mac_bind(ctx, 32, ovnact_put_GET_ARP(ctx->ovnacts));
     } else if (lexer_match_id(ctx->lexer, "put_arp")) {

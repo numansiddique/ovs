@@ -64,6 +64,7 @@ struct simap;
     OVNACT(CLONE,         ovnact_nest)              \
     OVNACT(ARP,           ovnact_nest)              \
     OVNACT(ND_NA,         ovnact_nest)              \
+    OVNACT(ND_RA,         ovnact_nest)              \
     OVNACT(GET_ARP,       ovnact_get_mac_bind)      \
     OVNACT(PUT_ARP,       ovnact_put_mac_bind)      \
     OVNACT(GET_ND,        ovnact_get_mac_bind)      \
@@ -400,6 +401,12 @@ enum action_opcode {
      *
      */
     ACTION_OPCODE_DNS_LOOKUP,
+
+    /* "nd_ra { ...actions... }".
+     *
+     * The actions, in OpenFlow 1.3 format, follow the action_header.
+     */
+    ACTION_OPCODE_ND_RA,
 };
 
 /* Header. */
