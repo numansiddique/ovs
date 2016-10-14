@@ -2140,9 +2140,9 @@ build_port_security_ipv6_nd_flow(
     struct ds *match, struct eth_addr ea, struct ipv6_netaddr *ipv6_addrs,
     int n_ipv6_addrs)
 {
-    ds_put_format(match, " && ip6 && nd && ((nd.sll == "ETH_ADDR_FMT" || "
-                  "nd.sll == "ETH_ADDR_FMT") || ((nd.tll == "ETH_ADDR_FMT" || "
-                  "nd.tll == "ETH_ADDR_FMT")", ETH_ADDR_ARGS(eth_addr_zero),
+    ds_put_format(match, " && (nd_ns || nd_na) && ((nd.sll == "ETH_ADDR_FMT
+                  " || nd.sll == "ETH_ADDR_FMT") || ((nd.tll == "ETH_ADDR_FMT
+                  " || nd.tll == "ETH_ADDR_FMT")", ETH_ADDR_ARGS(eth_addr_zero),
                   ETH_ADDR_ARGS(ea), ETH_ADDR_ARGS(eth_addr_zero),
                   ETH_ADDR_ARGS(ea));
     if (!n_ipv6_addrs) {
@@ -2270,7 +2270,8 @@ build_port_security_nd(struct ovn_port *op, struct hmap *lflows)
     }
 
     ds_clear(&match);
-    ds_put_format(&match, "inport == %s && (arp || nd)", op->json_key);
+    ds_put_format(&match, "inport == %s && (arp || nd_ns || nd_na)",
+                  op->json_key);
     ovn_lflow_add(lflows, op->od, S_SWITCH_IN_PORT_SEC_ND, 80,
                   ds_cstr(&match), "drop;");
     ds_destroy(&match);
