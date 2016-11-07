@@ -65,6 +65,8 @@ static const char *ovnsb_db;
  * MAC addresses allocated by the OVN ipam module. */
 static struct hmap macam = HMAP_INITIALIZER(&macam);
 
+static struct sset locked_lports =  SSET_INITIALIZER(&locked_lports);
+
 #define MAX_OVN_TAGS 4096
 
 /* Pipeline stages. */
@@ -1346,7 +1348,8 @@ join_logical_ports(struct northd_context *ctx,
 
 static void
 ovn_port_update_sbrec(const struct ovn_port *op,
-                      struct hmap *chassis_qdisc_queues)
+                      struct hmap *chassis_qdisc_queues,
+                      struct ovsdb_idl *ovnsb_idl)
 {
     sbrec_port_binding_set_datapath(op->sb, op->od->sb);
     if (op->nbrp) {
@@ -1397,6 +1400,24 @@ ovn_port_update_sbrec(const struct ovn_port *op,
             sbrec_port_binding_set_options(op->sb, &options);
             smap_destroy(&options);
             sbrec_port_binding_set_type(op->sb, op->nbsp->type);
+
+            /* Set the chassis for the port binding if defined */
+            const char *chassis = NULL;
+            if (!strcmp(op->nbsp->type, "l2gateway")) {
+                chassis = smap_get(&op->nbsp->options, "l2gateway-chassis");
+            } else {
+                chassis = smap_get(&op->nbsp->options, "chassis");
+            }
+
+            if (chassis) {
+                const struct sbrec_chassis *chassis_rec = NULL;
+                SBREC_CHASSIS_FOR_EACH(chassis_rec, ovnsb_idl) {
+                    if (!strcmp(chassis_rec->name, chassis)) {
+                        break;
+                    }
+                }
+                sbrec_port_binding_set_chassis(op->sb, chassis_rec);
+            }
         } else {
             const char *chassis = NULL;
             if (op->peer && op->peer->od && op->peer->od->nbr) {
@@ -1418,6 +1439,13 @@ ovn_port_update_sbrec(const struct ovn_port *op,
             smap_add(&new, "peer", router_port);
             if (chassis) {
                 smap_add(&new, "l3gateway-chassis", chassis);
+                const struct sbrec_chassis *chassis_rec = NULL;
+                SBREC_CHASSIS_FOR_EACH(chassis_rec, ovnsb_idl) {
+                    if (!strcmp(chassis_rec->name, chassis)) {
+                        break;
+                    }
+                }
+                sbrec_port_binding_set_chassis(op->sb, chassis_rec);
             }
 
             const char *nat_addresses = smap_get(&op->nbsp->options,
@@ -1482,7 +1510,7 @@ build_ports(struct northd_context *ctx, struct hmap *datapaths,
         if (op->nbsp) {
             tag_alloc_create_new_tag(&tag_alloc_table, op->nbsp);
         }
-        ovn_port_update_sbrec(op, &chassis_qdisc_queues);
+        ovn_port_update_sbrec(op, &chassis_qdisc_queues, ctx->ovnsb_idl);
 
         add_tnlid(&op->od->port_tnlids, op->sb->tunnel_key);
         if (op->sb->tunnel_key > op->od->port_key_hint) {
@@ -1498,7 +1526,7 @@ build_ports(struct northd_context *ctx, struct hmap *datapaths,
         }
 
         op->sb = sbrec_port_binding_insert(ctx->ovnsb_txn);
-        ovn_port_update_sbrec(op, &chassis_qdisc_queues);
+        ovn_port_update_sbrec(op, &chassis_qdisc_queues, ctx->ovnsb_idl);
 
         sbrec_port_binding_set_logical_port(op->sb, op->key);
         sbrec_port_binding_set_tunnel_key(op->sb, tunnel_key);
@@ -4448,6 +4476,53 @@ sync_address_sets(struct northd_context *ctx)
     }
     shash_destroy(&sb_address_sets);
 }
+
+static char *
+construct_valid_lock_name(const char *s) {
+    char *l_name = xzalloc(strlen(s) + 2);
+    strcpy(l_name, "L_");
+    for(int i = 0; i < strlen(s); i++) {
+        if (s[i] == '-') {
+            l_name[i + 2] = '_';
+        } else {
+            l_name[i + 2] = s[i];
+        }
+    }
+
+    return l_name;
+}
+
+static void
+ovnsb_set_lport_locks(struct northd_context *ctx)
+{
+    const struct sbrec_port_binding *sb;
+    struct sset lports_to_lock = SSET_INITIALIZER(&lports_to_lock);
+    SBREC_PORT_BINDING_FOR_EACH(sb, ctx->ovnsb_idl) {
+        if (sb->type[0] || !sb->chassis) {
+            continue;
+        }
+
+        sset_add(&lports_to_lock, sb->logical_port);
+        if (!sset_contains(&locked_lports, sb->logical_port)) {
+            sset_add(&locked_lports, sb->logical_port);
+            char *l_name = construct_valid_lock_name(sb->logical_port);
+            ovsdb_idl_set_lock(ctx->ovnsb_idl, l_name);
+            free(l_name);
+        }
+    }
+
+    const char *lport, *next;
+    SSET_FOR_EACH_SAFE (lport, next, &locked_lports) {
+        if (!sset_contains(&lports_to_lock, lport)) {
+            sset_delete(&locked_lports, SSET_NODE_FROM_NAME(lport));
+            char *l_name = construct_valid_lock_name(lport);
+            ovsdb_idl_remove_lock(ctx->ovnsb_idl, l_name);
+            free(l_name);
+        }
+    }
+
+    sset_destroy(&lports_to_lock);
+}
 
 static void
 ovnnb_db_run(struct northd_context *ctx, struct ovsdb_idl_loop *sb_loop)
@@ -4533,13 +4608,16 @@ update_logical_port_status(struct northd_context *ctx)
             continue;
         }
 
-        if (sb->chassis && (!nbsp->up || !*nbsp->up)) {
+        char *l_name = construct_valid_lock_name(nbsp->name);
+        if (ovsdb_idl_is_lock_contended(ctx->ovnsb_idl, l_name)
+            &&  !ovsdb_idl_has_lock(ctx->ovnsb_idl, l_name)) {
             bool up = true;
             nbrec_logical_switch_port_set_up(nbsp, &up, 1);
-        } else if (!sb->chassis && (!nbsp->up || *nbsp->up)) {
+        } else {
             bool up = false;
             nbrec_logical_switch_port_set_up(nbsp, &up, 1);
         }
+        free(l_name);
     }
 
     HMAP_FOR_EACH_POP(hash_node, node, &lports_hmap) {
@@ -4860,6 +4938,7 @@ main(int argc, char *argv[])
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_chassis);
     ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_nb_cfg);
+    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_name);
 
     /* Main loop. */
     exiting = false;
@@ -4884,8 +4963,11 @@ main(int argc, char *argv[])
             poll_immediate_wake();
         }
         ovsdb_idl_loop_commit_and_wait(&ovnnb_idl_loop);
-        ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
+        int retval = ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
 
+        if (retval != -1) {
+            ovnsb_set_lport_locks(&ctx);
+        }
         poll_block();
         if (should_service_stop()) {
             exiting = true;
@@ -4895,6 +4977,7 @@ main(int argc, char *argv[])
     unixctl_server_destroy(unixctl);
     ovsdb_idl_loop_destroy(&ovnnb_idl_loop);
     ovsdb_idl_loop_destroy(&ovnsb_idl_loop);
+    sset_destroy(&locked_lports);
     service_stop();
 
     exit(res);

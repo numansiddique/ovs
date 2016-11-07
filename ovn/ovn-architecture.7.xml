@@ -430,7 +430,10 @@
       update the flow that delivers broadcast and multicast packets to include
       the new port.  It also creates a record in the <code>Binding</code> table
       and populates all its columns except the column that identifies the
-      <code>chassis</code>.
+      <code>chassis</code>. It populates the <code>chassis</code> column of
+      the <code>Binding</code> table if the <code>options:chassis</code> column
+      of the <code>Logical_Switch_Port</code> table is defined with a valid
+      chassis id.
     </li>
 
     <li>
@@ -456,12 +459,12 @@
     <li>
       On the hypervisor where the VM is powered on, <code>ovn-controller</code>
       notices <code>external_ids</code>:<code>iface-id</code> in the new
-      Interface. In response, in the OVN Southbound DB, it updates the
+      Interface. In response, in the OVN Southbound DB, it reads the
       <code>Binding</code> table's <code>chassis</code> column for the
       row that links the logical port from <code>external_ids</code>:<code>
-      iface-id</code> to the hypervisor. Afterward, <code>ovn-controller</code>
-      updates the local hypervisor's OpenFlow tables so that packets to and from
-      the VIF are properly handled.
+      iface-id</code> and matches with its own chassis id. If the match is
+      successful, <code>ovn-controller</code> updates the local hypervisor's
+      OpenFlow tables so that packets to and from the VIF are properly handled.
     </li>
 
     <li>
@@ -490,21 +493,6 @@
       Eventually, a user powers off the VM that owns the VIF.  On the
       hypervisor where the VM was powered off, the VIF is deleted from the OVN
       integration bridge.
-    </li>
-
-    <li>
-      On the hypervisor where the VM was powered off,
-      <code>ovn-controller</code> notices that the VIF was deleted.  In
-      response, it removes the <code>Chassis</code> column content in the
-      <code>Binding</code> table for the logical port.
-    </li>
-
-    <li>
-      On every hypervisor, <code>ovn-controller</code> notices the empty
-      <code>Chassis</code> column in the <code>Binding</code> table's row
-      for the logical port.  This means that <code>ovn-controller</code> no
-      longer knows the physical location of the logical port, so each instance
-      updates its OpenFlow table to reflect that.
     </li>
 
     <li>

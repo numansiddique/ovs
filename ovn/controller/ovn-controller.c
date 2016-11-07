@@ -36,6 +36,7 @@
 #include "lflow.h"
 #include "lib/vswitch-idl.h"
 #include "lport.h"
+#include "lport_lock.h"
 #include "ofctrl.h"
 #include "openvswitch/vconn.h"
 #include "openvswitch/vlog.h"
@@ -430,6 +431,7 @@ main(int argc, char *argv[])
     ofctrl_init(&group_table);
     pinctrl_init();
     lflow_init();
+    lport_lock_init();
 
     /* Connect to OVS OVSDB instance.  We do not monitor all tables by
      * default, so modules must register their interest explicitly.  */
@@ -561,8 +563,6 @@ main(int argc, char *argv[])
             lport_index_destroy(&lports);
         }
 
-        sset_destroy(&all_lports);
-
         struct local_datapath *cur_node, *next_node;
         HMAP_FOR_EACH_SAFE (cur_node, next_node, hmap_node, &local_datapaths) {
             hmap_remove(&local_datapaths, &cur_node->hmap_node);
@@ -590,7 +590,8 @@ main(int argc, char *argv[])
             ofctrl_wait();
             pinctrl_wait(&ctx);
         }
-        ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
+
+        int retval = ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
         ovsdb_idl_track_clear(ovnsb_idl_loop.idl);
 
         if (ovsdb_idl_loop_commit_and_wait(&ovs_idl_loop) == 1) {
@@ -604,6 +605,11 @@ main(int argc, char *argv[])
             }
         }
         ovsdb_idl_track_clear(ovs_idl_loop.idl);
+
+        if (retval != -1) {
+            lport_lock_run(ovnsb_idl_loop.idl, chassis_id, &all_lports);
+        }
+        sset_destroy(&all_lports);
 
         poll_block();
         if (should_service_stop()) {
@@ -629,6 +635,7 @@ main(int argc, char *argv[])
         done = binding_cleanup(&ctx, chassis_id);
         done = chassis_cleanup(&ctx, chassis_id) && done;
         done = encaps_cleanup(&ctx, br_int) && done;
+        done = lport_lock_cleanup() && done;
         if (done) {
             poll_immediate_wake();
         }

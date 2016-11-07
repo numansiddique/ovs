@@ -80,6 +80,8 @@ ovn-sbctl \
         type=localnet options:network_name=physnet1 \
     -- create Port_Binding datapath=@dp102 logical_port=localvif2 tunnel_key=2
 ovs-vsctl add-port br-int localvif2 -- set Interface localvif2 external_ids:iface-id=localvif2
+ovn-sbctl lsp-bind localvif2 hv
+
 check_patches \
     'br-int  patch-br-int-to-localnet2 patch-localnet2-to-br-int' \
     'br-eth0 patch-localnet2-to-br-int patch-br-int-to-localnet2'
