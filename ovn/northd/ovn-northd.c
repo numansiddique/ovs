@@ -1346,7 +1346,8 @@ join_logical_ports(struct northd_context *ctx,
 
 static void
 ovn_port_update_sbrec(const struct ovn_port *op,
-                      struct hmap *chassis_qdisc_queues)
+                      struct hmap *chassis_qdisc_queues,
+                      struct ovsdb_idl *ovnsb_idl)
 {
     sbrec_port_binding_set_datapath(op->sb, op->od->sb);
     if (op->nbrp) {
@@ -1397,6 +1398,24 @@ ovn_port_update_sbrec(const struct ovn_port *op,
             sbrec_port_binding_set_options(op->sb, &options);
             smap_destroy(&options);
             sbrec_port_binding_set_type(op->sb, op->nbsp->type);
+
+            /* Set the chassis for the port binding if defined */
+            const char *chassis = NULL;
+            if (!strcmp(op->nbsp->type, "l2gateway")) {
+                chassis = smap_get(&op->nbsp->options, "l2gateway-chassis");
+            } else {
+                chassis = smap_get(&op->nbsp->options, "chassis");
+            }
+
+            if (chassis) {
+                const struct sbrec_chassis *chassis_rec = NULL;
+                SBREC_CHASSIS_FOR_EACH(chassis_rec, ovnsb_idl) {
+                    if (!strcmp(chassis_rec->name, chassis)) {
+                        break;
+                    }
+                }
+                sbrec_port_binding_set_chassis(op->sb, chassis_rec);
+            }
         } else {
             const char *chassis = NULL;
             if (op->peer && op->peer->od && op->peer->od->nbr) {
@@ -1418,6 +1437,13 @@ ovn_port_update_sbrec(const struct ovn_port *op,
             smap_add(&new, "peer", router_port);
             if (chassis) {
                 smap_add(&new, "l3gateway-chassis", chassis);
+                const struct sbrec_chassis *chassis_rec = NULL;
+                SBREC_CHASSIS_FOR_EACH(chassis_rec, ovnsb_idl) {
+                    if (!strcmp(chassis_rec->name, chassis)) {
+                        break;
+                    }
+                }
+                sbrec_port_binding_set_chassis(op->sb, chassis_rec);
             }
 
             const char *nat_addresses = smap_get(&op->nbsp->options,
@@ -1482,7 +1508,7 @@ build_ports(struct northd_context *ctx, struct hmap *datapaths,
         if (op->nbsp) {
             tag_alloc_create_new_tag(&tag_alloc_table, op->nbsp);
         }
-        ovn_port_update_sbrec(op, &chassis_qdisc_queues);
+        ovn_port_update_sbrec(op, &chassis_qdisc_queues, ctx->ovnsb_idl);
 
         add_tnlid(&op->od->port_tnlids, op->sb->tunnel_key);
         if (op->sb->tunnel_key > op->od->port_key_hint) {
@@ -1498,7 +1524,7 @@ build_ports(struct northd_context *ctx, struct hmap *datapaths,
         }
 
         op->sb = sbrec_port_binding_insert(ctx->ovnsb_txn);
-        ovn_port_update_sbrec(op, &chassis_qdisc_queues);
+        ovn_port_update_sbrec(op, &chassis_qdisc_queues, ctx->ovnsb_idl);
 
         sbrec_port_binding_set_logical_port(op->sb, op->key);
         sbrec_port_binding_set_tunnel_key(op->sb, tunnel_key);
@@ -4860,6 +4886,7 @@ main(int argc, char *argv[])
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_chassis);
     ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_nb_cfg);
+    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_name);
 
     /* Main loop. */
     exiting = false;

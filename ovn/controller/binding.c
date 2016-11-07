@@ -295,67 +295,30 @@ consider_local_datapath(struct controller_ctx *ctx,
             /* Add child logical port to the set of all local ports. */
             sset_add(all_lports, binding_rec->logical_port);
         }
+
+        if (binding_rec->chassis != chassis_rec) {
+            return;
+        }
         add_local_datapath(local_datapaths, binding_rec);
         if (iface_rec && qos_map && ctx->ovs_idl_txn) {
             get_qos_params(binding_rec, qos_map);
         }
-        if (binding_rec->chassis == chassis_rec) {
-            return;
-        }
-        if (ctx->ovnsb_idl_txn) {
-            if (binding_rec->chassis) {
-                VLOG_INFO("Changing chassis for lport %s from %s to %s.",
-                          binding_rec->logical_port,
-                          binding_rec->chassis->name,
-                          chassis_rec->name);
-            } else {
-                VLOG_INFO("Claiming lport %s for this chassis.",
-                          binding_rec->logical_port);
-                for (int i = 0; i < binding_rec->n_mac; i++) {
-                    VLOG_INFO("Claiming %s", binding_rec->mac[i]);
-                }
-            }
-            sbrec_port_binding_set_chassis(binding_rec, chassis_rec);
-        }
     } else if (!strcmp(binding_rec->type, "l2gateway")) {
-        const char *chassis_id = smap_get(&binding_rec->options,
-                                          "l2gateway-chassis");
-        if (!chassis_id || strcmp(chassis_id, chassis_rec->name)) {
-            if (binding_rec->chassis == chassis_rec && ctx->ovnsb_idl_txn) {
-                VLOG_INFO("Releasing l2gateway port %s from this chassis.",
-                          binding_rec->logical_port);
-                sbrec_port_binding_set_chassis(binding_rec, NULL);
-            }
+        if (!binding_rec->chassis || strcmp(binding_rec->chassis->name,
+                                            chassis_rec->name)) {
             return;
         }
 
         sset_add(all_lports, binding_rec->logical_port);
         add_local_datapath(local_datapaths, binding_rec);
-        if (binding_rec->chassis == chassis_rec) {
-            return;
-        }
-
-        if (!strcmp(chassis_id, chassis_rec->name) && ctx->ovnsb_idl_txn) {
-            VLOG_INFO("Claiming l2gateway port %s for this chassis.",
-                      binding_rec->logical_port);
-            sbrec_port_binding_set_chassis(binding_rec, chassis_rec);
-        }
     } else if (!strcmp(binding_rec->type, "l3gateway")) {
         const char *chassis = smap_get(&binding_rec->options,
                                        "l3gateway-chassis");
-        if (!strcmp(chassis, chassis_rec->name) && ctx->ovnsb_idl_txn) {
+        if (chassis && !strcmp(chassis, chassis_rec->name)) {
             add_local_datapath(local_datapaths, binding_rec);
         }
     } else if (chassis_rec && binding_rec->chassis == chassis_rec) {
-        if (ctx->ovnsb_idl_txn) {
-            VLOG_INFO("Releasing lport %s from this chassis.",
-                      binding_rec->logical_port);
-            for (int i = 0; i < binding_rec->n_mac; i++) {
-                VLOG_INFO("Releasing %s", binding_rec->mac[i]);
-            }
-            sbrec_port_binding_set_chassis(binding_rec, NULL);
-            sset_find_and_delete(all_lports, binding_rec->logical_port);
-        }
+        sset_find_and_delete(all_lports, binding_rec->logical_port);
     } else if (!binding_rec->chassis
                && !strcmp(binding_rec->type, "localnet")) {
         /* Add all localnet ports to all_lports so that we allocate ct zones
@@ -387,7 +350,7 @@ binding_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int,
     }
 
     /* Run through each binding record to see if it is resident on this
-     * chassis and update the binding accordingly.  This includes both
+     * chassis and update the local datapath accordingly.  This includes both
      * directly connected logical ports and children of those ports. */
     SBREC_PORT_BINDING_FOR_EACH(binding_rec, ctx->ovnsb_idl) {
         consider_local_datapath(ctx, chassis_rec, binding_rec,
@@ -413,33 +376,8 @@ binding_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int,
 /* Returns true if the database is all cleaned up, false if more work is
  * required. */
 bool
-binding_cleanup(struct controller_ctx *ctx, const char *chassis_id)
+binding_cleanup(struct controller_ctx *ctx  OVS_UNUSED,
+                const char *chassis_id OVS_UNUSED)
 {
-    if (!ctx->ovnsb_idl_txn) {
-        return false;
-    }
-
-    if (!chassis_id) {
-        return true;
-    }
-
-    const struct sbrec_chassis *chassis_rec
-        = get_chassis(ctx->ovnsb_idl, chassis_id);
-    if (!chassis_rec) {
-        return true;
-    }
-
-    ovsdb_idl_txn_add_comment(
-        ctx->ovnsb_idl_txn,
-        "ovn-controller: removing all port bindings for '%s'", chassis_id);
-
-    const struct sbrec_port_binding *binding_rec;
-    bool any_changes = false;
-    SBREC_PORT_BINDING_FOR_EACH(binding_rec, ctx->ovnsb_idl) {
-        if (binding_rec->chassis == chassis_rec) {
-            sbrec_port_binding_set_chassis(binding_rec, NULL);
-            any_changes = true;
-        }
-    }
-    return !any_changes;
+    return true;
 }

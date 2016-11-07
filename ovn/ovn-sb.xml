@@ -1604,33 +1604,32 @@ tcp.flags = RST;
       For every <code>Logical_Switch_Port</code> record in
       <code>OVN_Northbound</code> database, <code>ovn-northd</code>
       creates a record in this table.  <code>ovn-northd</code> populates
-      and maintains every column except the <code>chassis</code> column,
-      which it leaves empty in new records.
+      and maintains every column.
     </p>
 
     <p>
-      <code>ovn-controller</code>/<code>ovn-controller-vtep</code>
-      populates the <code>chassis</code> column for the records that
-      identify the logical ports that are located on its hypervisor/gateway,
-      which <code>ovn-controller</code>/<code>ovn-controller-vtep</code> in
-      turn finds out by monitoring the local hypervisor's Open_vSwitch
-      database, which identifies logical ports via the conventions described
-      in <code>IntegrationGuide.rst</code>.  (The exceptions are for
-      <code>Port_Binding</code> records with <code>type</code> of
-      <code>l3gateway</code>, whose locations are identified by
-      <code>ovn-northd</code> via the <code>options:l3gateway-chassis</code>
-      column in this table.  <code>ovn-controller</code> is still responsible
-      to populate the <code>chassis</code> column.)
+      <code>ovn-controller</code> expects the <code>chassis</code> column
+      to be populated by <code>ovn-northd</code> or by the administrator
+      (using the <code>ovn-sbctl</code> utility).
     </p>
 
     <p>
-      When a chassis shuts down gracefully, it should clean up the
-      <code>chassis</code> column that it previously had populated.
+      <code>ovn-controller-vtep</code> populates the <code>chassis</code> column
+      for the records that identify the logical ports that are located on its hypervisor/gateway,
+      which <code>ovn-controller-vtep</code> in turn finds out by monitoring
+      the local hypervisor's Open_vSwitch database, which identifies logical
+      ports via the conventions described in <code>IntegrationGuide.rst</code>.
+    </p>
+
+    <p>
+      When a chassis shuts down gracefully, CMS via <code>ovn-northd</code>
+      should clean up <code>chassis</code> column for the logical ports hosted
+      in this chassis.
       (This is not critical because resources hosted on the chassis are equally
       unreachable regardless of whether their rows are present.)  To handle the
       case where a VM is shut down abruptly on one chassis, then brought up
       again on a different one,
-      <code>ovn-controller</code>/<code>ovn-controller-vtep</code> must
+      <code>ovn-northd</code>/<code>ovn-controller-vtep</code> must
       overwrite the <code>chassis</code> column with new information.
     </p>
 
@@ -1655,8 +1654,10 @@ tcp.flags = RST;
           <dt>(empty string)</dt>
           <dd>
             The physical location of the logical port.  To successfully identify a
-            chassis, this column must be a <ref table="Chassis"/> record.  This is
-            populated by <code>ovn-controller</code>.
+            chassis, this column must be a <ref table="Chassis"/> record.
+            This is populated by <code>ovn-northd</code> based on the value
+            of the <code>options:chassis</code> column in the
+            <ref table="Logical_Switch_Port"/> table if defined by CMS.
           </dd>
 
           <dt>vtep</dt>
@@ -1675,17 +1676,19 @@ tcp.flags = RST;
           <dt>l3gateway</dt>
           <dd>
             The physical location of the L3 gateway.  To successfully identify a
-            chassis, this column must be a <ref table="Chassis"/> record.  This is
-            populated by <code>ovn-controller</code> based on the value of
-            the <code>options:l3gateway-chassis</code> column in this table.
+            chassis, this column must be a <ref table="Chassis"/> record.
+            This is populated by <code>ovn-northd</code> based on the value
+            of the <code>options:chassis</code> column in the
+            <ref table="Logical_Switch_Port"/> table if defined by CMS.
           </dd>
 
           <dt>l2gateway</dt>
           <dd>
             The physical location of this L2 gateway.  To successfully identify a
             chassis, this column must be a <ref table="Chassis"/> record.
-            This is populated by <code>ovn-controller</code> based on the value
-            of the <code>options:l2gateway-chassis</code> column in this table.
+            This is populated by <code>ovn-northd</code> based on the value
+            of the <code>options:l2gateway-chassis</code> column in the
+            <ref table="Logical_Switch_Port"/> table if defined by CMS.
           </dd>
         </dl>
 

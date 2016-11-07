@@ -305,6 +305,14 @@
           If set, indicates the maximum burst size for data sent from this
           interface, in bits.
         </column>
+
+        <column name="options" key="chassis">
+          Optional. The chassis on which the logical port should be bound to.
+          <code>ovn-controller</code> running on the defined chassis will
+          associate this logical port to the interface present in the OVN
+          integration bridge (defined with logical port name in
+          <code>external_ids</code>:<code>iface-id</code>).
+        </column>
       </group>
     </group>
 

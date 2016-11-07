@@ -190,6 +190,13 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
         return;
     }
 
+    /* binding->chassis should be set for VM (of VIF) interface port */
+    if (!binding->type[0] && !binding->chassis) {
+        /* This could happen in cases where ovn-northd has not updated the
+         * chassis column */
+        return;
+    }
+
     /* Find the OpenFlow port for the logical port, as 'ofport'.  This is
      * one of:
      *
