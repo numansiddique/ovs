@@ -61,8 +61,12 @@ void ovsdb_idl_run(struct ovsdb_idl *);
 void ovsdb_idl_wait(struct ovsdb_idl *);
 
 void ovsdb_idl_set_lock(struct ovsdb_idl *, const char *lock_name);
-bool ovsdb_idl_has_lock(const struct ovsdb_idl *);
-bool ovsdb_idl_is_lock_contended(const struct ovsdb_idl *);
+void ovsdb_idl_steal_lock(struct ovsdb_idl *, const char *lock_name);
+bool ovsdb_idl_has_lock(const struct ovsdb_idl *, const char *lock_name);
+bool ovsdb_idl_is_lock_contended(const struct ovsdb_idl *,
+                                 const char *lock_name);
+void ovsdb_idl_remove_lock(struct ovsdb_idl *, const char *lock_name);
+void ovsdb_idl_use_lock(struct ovsdb_idl *, const char *lock_name);
 
 const struct uuid  * ovsdb_idl_get_monitor_id(const struct ovsdb_idl *);
 unsigned int ovsdb_idl_get_seqno(const struct ovsdb_idl *);

@@ -398,6 +398,7 @@ bridge_init(const char *remote)
     idl = ovsdb_idl_create(remote, &ovsrec_idl_class, true, true);
     idl_seqno = ovsdb_idl_get_seqno(idl);
     ovsdb_idl_set_lock(idl, "ovs_vswitchd");
+    ovsdb_idl_use_lock(idl, "ovs_vswitchd");
     ovsdb_idl_verify_write_only(idl);
 
     ovsdb_idl_omit_alert(idl, &ovsrec_open_vswitch_col_cur_cfg);
@@ -2891,7 +2892,7 @@ bridge_run(void)
 
     if_notifier_run();
 
-    if (ovsdb_idl_is_lock_contended(idl)) {
+    if (ovsdb_idl_is_lock_contended(idl, "ovs_vswitchd")) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
         struct bridge *br, *next_br;
 
@@ -2907,7 +2908,7 @@ bridge_run(void)
          * disable system stats collection. */
         system_stats_enable(false);
         return;
-    } else if (!ovsdb_idl_has_lock(idl)
+    } else if (!ovsdb_idl_has_lock(idl, "ovs_vswitchd")
                || !ovsdb_idl_has_ever_connected(idl)) {
         /* Returns if not holding the lock or not done retrieving db
          * contents. */

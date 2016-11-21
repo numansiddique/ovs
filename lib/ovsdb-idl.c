@@ -84,6 +84,13 @@ enum ovsdb_idl_state {
     IDL_S_NO_SCHEMA
 };
 
+struct ovsdb_lock_info {
+    char *lock_name;
+    bool has_lock;
+    bool is_lock_contended;
+    struct json *lock_request_id;
+};
+
 struct ovsdb_idl {
     const struct ovsdb_idl_class *class;
     struct jsonrpc_session *session;
@@ -101,9 +108,7 @@ struct ovsdb_idl {
 
     /* Database locking. */
     char *lock_name;            /* Name of lock we need, NULL if none. */
-    bool has_lock;              /* Has db server told us we have the lock? */
-    bool is_lock_contended;     /* Has db server told us we can't get lock? */
-    struct json *lock_request_id; /* JSON-RPC ID of in-flight lock request. */
+    struct shash locks;
 
     /* Transaction support. */
     struct ovsdb_idl_txn *txn;
@@ -207,10 +212,15 @@ static void ovsdb_idl_txn_add_set_op(struct ovsdb_idl_row *,
                                      struct ovsdb_datum *,
                                      enum set_op_type);
 
-static void ovsdb_idl_send_lock_request(struct ovsdb_idl *);
-static void ovsdb_idl_send_unlock_request(struct ovsdb_idl *);
-static void ovsdb_idl_parse_lock_reply(struct ovsdb_idl *,
-                                       const struct json *);
+static void ovsdb_idl_send_lock_request(struct ovsdb_idl *,
+                                        struct ovsdb_lock_info *lock_info);
+static void ovsdb_idl_send_unlock_request(struct ovsdb_idl *,
+                                          struct ovsdb_lock_info *lock_info);
+static void ovsdb_idl_send_steal_request(struct ovsdb_idl *idl,
+                                         struct ovsdb_lock_info *lock_info);
+static bool ovsdb_idl_check_and_parse_lock_reply(struct ovsdb_idl *idl,
+                                                 const struct json *msg_id,
+                                                 const struct json *result);
 static void ovsdb_idl_parse_lock_notify(struct ovsdb_idl *,
                                         const struct json *params,
                                         bool new_has_lock);
@@ -287,7 +297,7 @@ ovsdb_idl_create(const char *remote, const struct ovsdb_idl_class *class,
     idl->state_seqno = UINT_MAX;
     idl->request_id = NULL;
     idl->schema = NULL;
-
+    shash_init(&idl->locks);
     hmap_init(&idl->outstanding_txns);
     uuid_generate(&idl->uuid);
 
@@ -328,9 +338,22 @@ ovsdb_idl_destroy(struct ovsdb_idl *idl)
         free(idl->tables);
         json_destroy(idl->request_id);
         free(idl->lock_name);
-        json_destroy(idl->lock_request_id);
-        json_destroy(idl->schema);
         hmap_destroy(&idl->outstanding_txns);
+
+        struct shash_node *node, *next;
+        SHASH_FOR_EACH_SAFE(node, next, &idl->locks) {
+            hmap_remove(&idl->locks.map, &node->node);
+            struct ovsdb_lock_info *lock_info = node->data;
+            free(lock_info->lock_name);
+            if (lock_info->lock_request_id) {
+                json_destroy(lock_info->lock_request_id);
+            }
+            free(lock_info);
+            free(node->name);
+            free(node);
+        }
+        hmap_destroy(&idl->locks.map);
+        shash_destroy_free_data(&idl->locks);
         free(idl);
     }
 }
@@ -403,8 +426,10 @@ ovsdb_idl_run(struct ovsdb_idl *idl)
 
             ovsdb_idl_send_schema_request(idl);
             idl->state = IDL_S_SCHEMA_REQUESTED;
-            if (idl->lock_name) {
-                ovsdb_idl_send_lock_request(idl);
+            struct shash_node *node;
+            SHASH_FOR_EACH(node, &idl->locks) {
+                struct ovsdb_lock_info *lock_info = node->data;
+                ovsdb_idl_send_lock_request(idl, lock_info);
             }
         }
 
@@ -468,11 +493,6 @@ ovsdb_idl_run(struct ovsdb_idl *idl)
             /* Database contents changed. */
             ovsdb_idl_parse_update(idl, msg->params->u.array.elems[1],
                                    OVSDB_UPDATE);
-        } else if (msg->type == JSONRPC_REPLY
-                   && idl->lock_request_id
-                   && json_equal(idl->lock_request_id, msg->id)) {
-            /* Reply to our "lock" request. */
-            ovsdb_idl_parse_lock_reply(idl, msg->result);
         } else if (msg->type == JSONRPC_NOTIFY
                    && !strcmp(msg->method, "locked")) {
             /* We got our lock. */
@@ -507,12 +527,20 @@ ovsdb_idl_run(struct ovsdb_idl *idl)
                    && ovsdb_idl_txn_process_reply(idl, msg)) {
             /* ovsdb_idl_txn_process_reply() did everything needful. */
         } else {
-            /* This can happen if ovsdb_idl_txn_destroy() is called to destroy
-             * a transaction before we receive the reply, so keep the log level
-             * low. */
-            VLOG_DBG("%s: received unexpected %s message",
-                     jsonrpc_session_get_name(idl->session),
-                     jsonrpc_msg_type_to_string(msg->type));
+            bool lock_reply = false;
+            if (msg->type == JSONRPC_REPLY) {
+                lock_reply = ovsdb_idl_check_and_parse_lock_reply(
+                    idl, msg->id, msg->result);
+            }
+
+            if (!lock_reply) {
+                /* This can happen if ovsdb_idl_txn_destroy() is called to
+                 * destroy a transaction before we receive the reply, so keep
+                 * the log level low. */
+                VLOG_DBG("%s: received unexpected %s message",
+                         jsonrpc_session_get_name(idl->session),
+                         jsonrpc_msg_type_to_string(msg->type));
+            }
         }
         jsonrpc_msg_destroy(msg);
     }
@@ -2870,7 +2898,7 @@ ovsdb_idl_txn_commit(struct ovsdb_idl_txn *txn)
     }
 
     /* If we need a lock but don't have it, give up quickly. */
-    if (txn->idl->lock_name && !ovsdb_idl_has_lock(txn->idl)) {
+    if (txn->idl->lock_name && !ovsdb_idl_has_lock(txn->idl, txn->idl->lock_name)) {
         txn->status = TXN_NOT_LOCKED;
         goto disassemble_out;
     }
@@ -3703,22 +3731,34 @@ ovsdb_idl_get_initial_snapshot(struct ovsdb_idl *idl)
 void
 ovsdb_idl_set_lock(struct ovsdb_idl *idl, const char *lock_name)
 {
+    if (!lock_name || shash_find(&idl->locks, lock_name)) {
+        return;
+    }
+
     ovs_assert(!idl->txn);
     ovs_assert(hmap_is_empty(&idl->outstanding_txns));
+    struct ovsdb_lock_info *lock_info = xzalloc(sizeof(*lock_info));
+    shash_add(&idl->locks, lock_name, lock_info);
+    lock_info->lock_name = xstrdup(lock_name);
+    ovsdb_idl_send_lock_request(idl, lock_info);
+}
 
-    if (idl->lock_name && (!lock_name || strcmp(lock_name, idl->lock_name))) {
-        /* Release previous lock. */
-        ovsdb_idl_send_unlock_request(idl);
-        free(idl->lock_name);
-        idl->lock_name = NULL;
-        idl->is_lock_contended = false;
+void
+ovsdb_idl_steal_lock(struct ovsdb_idl *idl, const char *lock_name)
+{
+    if (!lock_name) {
+        return;
     }
 
-    if (lock_name && !idl->lock_name) {
-        /* Acquire new lock. */
-        idl->lock_name = xstrdup(lock_name);
-        ovsdb_idl_send_lock_request(idl);
+    ovs_assert(!idl->txn);
+    ovs_assert(hmap_is_empty(&idl->outstanding_txns));
+    struct ovsdb_lock_info *lock_info = shash_find_data(&idl->locks, lock_name);
+    if (!lock_info) {
+        lock_info = xzalloc(sizeof(*lock_info));
+        shash_add(&idl->locks, lock_name, lock_info);
+        lock_info->lock_name = xstrdup(lock_name);
     }
+    ovsdb_idl_send_steal_request(idl, lock_info);
 }
 
 /* Returns true if 'idl' is configured to obtain a lock and owns that lock.
@@ -3726,25 +3766,45 @@ ovsdb_idl_set_lock(struct ovsdb_idl *idl, const char *lock_name)
  * Locking and unlocking happens asynchronously from the database client's
  * point of view, so the information is only useful for optimization (e.g. if
  * the client doesn't have the lock then there's no point in trying to write to
- * the database). */
-bool
-ovsdb_idl_has_lock(const struct ovsdb_idl *idl)
-{
-    return idl->has_lock;
+ * the database).
+ */
+bool ovsdb_idl_has_lock(const struct ovsdb_idl *idl,
+                            const char *lock_name) {
+    struct ovsdb_lock_info *lock_info = shash_find_data(&idl->locks,
+                                                        lock_name);
+    return lock_info ? lock_info->has_lock : false;
 }
 
 /* Returns true if 'idl' is configured to obtain a lock but the database server
  * has indicated that some other client already owns the requested lock. */
-bool
-ovsdb_idl_is_lock_contended(const struct ovsdb_idl *idl)
+bool ovsdb_idl_is_lock_contended(const struct ovsdb_idl *idl,
+                                 const char *lock_name) {
+    struct ovsdb_lock_info *lock_info = shash_find_data(&idl->locks,
+                                                        lock_name);
+    return lock_info ? lock_info->is_lock_contended : false;
+}
+
+void ovsdb_idl_remove_lock(struct ovsdb_idl *idl, const char *lock_name) {
+    struct ovsdb_lock_info *lock_info = shash_find_and_delete(
+        &idl->locks, lock_name);
+    if (lock_info) {
+        ovsdb_idl_send_unlock_request(idl, lock_info);
+        free(lock_info);
+    }
+}
+
+void
+ovsdb_idl_use_lock(struct ovsdb_idl *idl, const char *lock_name)
 {
-    return idl->is_lock_contended;
+    free(idl->lock_name);
+    idl->lock_name =  xstrdup(lock_name);
 }
 
 static void
-ovsdb_idl_update_has_lock(struct ovsdb_idl *idl, bool new_has_lock)
+ovsdb_idl_update_has_lock(struct ovsdb_idl *idl,
+                          struct ovsdb_lock_info *lock_info, bool new_has_lock)
 {
-    if (new_has_lock && !idl->has_lock) {
+    if (new_has_lock && !lock_info->has_lock) {
         if (idl->state == IDL_S_MONITORING ||
             idl->state == IDL_S_MONITORING_COND) {
             idl->change_seqno++;
@@ -3753,48 +3813,73 @@ ovsdb_idl_update_has_lock(struct ovsdb_idl *idl, bool new_has_lock)
              * changed.  Finalizing the session will increment change_seqno
              * anyhow. */
         }
-        idl->is_lock_contended = false;
+        lock_info->is_lock_contended = false;
     }
-    idl->has_lock = new_has_lock;
+    lock_info->has_lock = new_has_lock;
 }
 
 static void
-ovsdb_idl_send_lock_request__(struct ovsdb_idl *idl, const char *method,
-                              struct json **idp)
+ovsdb_idl_send_lock_request__(struct ovsdb_idl *idl,
+                              struct ovsdb_lock_info *lock_info,
+                              const char *method, struct json **idp)
 {
-    ovsdb_idl_update_has_lock(idl, false);
+    ovsdb_idl_update_has_lock(idl, lock_info, false);
 
-    json_destroy(idl->lock_request_id);
-    idl->lock_request_id = NULL;
+    json_destroy(lock_info->lock_request_id);
+    lock_info->lock_request_id = NULL;
 
     if (jsonrpc_session_is_connected(idl->session)) {
         struct json *params;
 
-        params = json_array_create_1(json_string_create(idl->lock_name));
+        params = json_array_create_1(json_string_create(lock_info->lock_name));
         jsonrpc_session_send(idl->session,
                              jsonrpc_create_request(method, params, idp));
     }
 }
 
 static void
-ovsdb_idl_send_lock_request(struct ovsdb_idl *idl)
+ovsdb_idl_send_lock_request(struct ovsdb_idl *idl,
+                            struct ovsdb_lock_info *lock_info)
 {
-    ovsdb_idl_send_lock_request__(idl, "lock", &idl->lock_request_id);
+    ovsdb_idl_send_lock_request__(idl, lock_info, "lock",
+                                  &lock_info->lock_request_id);
 }
 
 static void
-ovsdb_idl_send_unlock_request(struct ovsdb_idl *idl)
+ovsdb_idl_send_unlock_request(struct ovsdb_idl *idl,
+                              struct ovsdb_lock_info *lock_info)
 {
-    ovsdb_idl_send_lock_request__(idl, "unlock", NULL);
+    ovsdb_idl_send_lock_request__(idl, lock_info, "unlock", NULL);
 }
 
 static void
-ovsdb_idl_parse_lock_reply(struct ovsdb_idl *idl, const struct json *result)
+ovsdb_idl_send_steal_request(struct ovsdb_idl *idl,
+                              struct ovsdb_lock_info *lock_info)
+{
+    ovsdb_idl_send_lock_request__(idl, lock_info, "steal",
+                                  &lock_info->lock_request_id);
+}
+
+static bool
+ovsdb_idl_check_and_parse_lock_reply(struct ovsdb_idl *idl,
+                                     const struct json *msg_id,
+                                     const struct json *result)
 {
     bool got_lock;
+    struct shash_node *node;
+    struct ovsdb_lock_info *lock_info = NULL;
+    SHASH_FOR_EACH(node, &idl->locks) {
+        lock_info = node->data;
+        if (lock_info && lock_info->lock_request_id
+            && json_equal(lock_info->lock_request_id, msg_id)) {
+            break;
+        }
+        lock_info = NULL;
+    }
 
-    json_destroy(idl->lock_request_id);
-    idl->lock_request_id = NULL;
+    if (!lock_info) {
+        return false;
+    }
 
     if (result->type == JSON_OBJECT) {
         const struct json *locked;
@@ -3805,10 +3890,12 @@ ovsdb_idl_parse_lock_reply(struct ovsdb_idl *idl, const struct json *result)
         got_lock = false;
     }
 
-    ovsdb_idl_update_has_lock(idl, got_lock);
+    ovsdb_idl_update_has_lock(idl, lock_info, got_lock);
     if (!got_lock) {
-        idl->is_lock_contended = true;
+        lock_info->is_lock_contended = true;
     }
+
+    return true;
 }
 
 static void
@@ -3816,16 +3903,17 @@ ovsdb_idl_parse_lock_notify(struct ovsdb_idl *idl,
                             const struct json *params,
                             bool new_has_lock)
 {
-    if (idl->lock_name
-        && params->type == JSON_ARRAY
+    if (params->type == JSON_ARRAY
         && json_array(params)->n > 0
         && json_array(params)->elems[0]->type == JSON_STRING) {
         const char *lock_name = json_string(json_array(params)->elems[0]);
 
-        if (!strcmp(idl->lock_name, lock_name)) {
-            ovsdb_idl_update_has_lock(idl, new_has_lock);
+        struct ovsdb_lock_info *lock_info = shash_find_data(&idl->locks,
+                                                            lock_name);
+        if (lock_info) {
+            ovsdb_idl_update_has_lock(idl, lock_info, new_has_lock);
             if (!new_has_lock) {
-                idl->is_lock_contended = true;
+                lock_info->is_lock_contended = true;
             }
         }
     }
