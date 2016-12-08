@@ -2653,4 +2653,24 @@ tcp.flags = RST;
       <column name="external_ids"/>
     </group>
   </table>
+  <table name="DNS" title="DNS options">
+    <p>
+      DNS table
+    </p>
+
+    <column name="datapath">
+    </column>
+
+    <column name="hostname">
+    </column>
+
+    <column name="fqdn">
+    </column>
+
+    <column name="ipv4_addresses">
+    </column>
+
+    <column name="ipv6_addresses">
+    </column>
+  </table>
 </database>

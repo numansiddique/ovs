@@ -659,7 +659,237 @@ exit:
 }
 
 static void
-process_packet_in(const struct ofp_header *msg)
+pinctrl_handle_dns_lkup(
+    struct dp_packet *pkt_in, struct ofputil_packet_in *pin,
+    struct ofpbuf *userdata, struct ofpbuf *continuation,
+    struct controller_ctx *ctx)
+{
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+    enum ofp_version version = rconn_get_version(swconn);
+    enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
+    struct dp_packet *pkt_out_ptr = NULL;
+    uint32_t success = 0;
+
+    /* Parse result field. */
+    const struct mf_field *f;
+    enum ofperr ofperr = nx_pull_header(userdata, NULL, &f, NULL);
+    if (ofperr) {
+       VLOG_WARN_RL(&rl, "bad result OXM (%s)", ofperr_to_string(ofperr));
+       goto exit;
+    }
+
+    /* Parse result offset. */
+    ovs_be32 *ofsp = ofpbuf_try_pull(userdata, sizeof *ofsp);
+    if (!ofsp) {
+        VLOG_WARN_RL(&rl, "offset not present in the userdata");
+        goto exit;
+    }
+
+    /* Check that the result is valid and writable. */
+    struct mf_subfield dst = { .field = f, .ofs = ntohl(*ofsp), .n_bits = 1 };
+    ofperr = mf_check_dst(&dst, NULL);
+    if (ofperr) {
+        VLOG_WARN_RL(&rl, "bad result bit (%s)", ofperr_to_string(ofperr));
+        goto exit;
+    }
+
+    /* Extract the DNS header */
+    struct dns_header const *in_dns_header = dp_packet_get_udp_payload(pkt_in);
+
+    /* Check if it is DNS request or not */
+    if (in_dns_header->lo_flag & 0x80) {
+        /* It's a DNS response packet which we are not interested in */
+        goto exit;
+    }
+
+    /* Check if at least one query request is present */
+    if (!ntohs(in_dns_header->qdcount)) {
+        goto exit;
+    }
+
+    struct udp_header *in_udp = dp_packet_l4(pkt_in);
+    size_t udp_len = ntohs(in_udp->udp_len);
+    size_t l4_len = dp_packet_l4_size(pkt_in);
+    uint8_t *end = (uint8_t *)in_udp + MIN(udp_len, l4_len);
+    uint8_t *in_dns_data = (uint8_t *)(in_dns_header + 1);
+    uint8_t *in_hostname = in_dns_data;
+    uint8_t idx = 0;
+    struct ds hostname;
+    ds_init(&hostname);
+    /* Extract the hostname. If the hostname is - 'www.ovn.org' it would be
+     * encoded as (in hex) - 03 77 77 77 03 6f 76 63 03 6f 72 67 00.
+     */
+    while (in_dns_data[idx] && (in_dns_data + idx) < end) {
+        uint8_t label_len = in_dns_data[idx++];
+        for (uint8_t i = 0; i < label_len; i++) {
+            ds_put_char(&hostname, in_dns_data[idx++]);
+        }
+        ds_put_char(&hostname, '.');
+    }
+
+    idx++;
+    ds_chomp(&hostname, '.');
+    ds_put_char(&hostname, 0);
+    in_dns_data += idx;
+
+    /* Query should have TYPE and CLASS fields */
+    if (in_dns_data + (2 * sizeof(ovs_be16)) > end) {
+        ds_destroy(&hostname);
+        goto exit;
+    }
+
+    uint16_t query_type = ntohs((*(ovs_be16 *) in_dns_data));
+
+    /* Supported query types - A, AAAA and ANY */
+    if (!(query_type == 0x1 || query_type == 0x1c || query_type == 0xff)) {
+        ds_destroy(&hostname);
+        goto exit;
+    }
+
+    uint64_t dp_key = ntohll(pin->flow_metadata.flow.metadata);
+    const struct sbrec_dns *sbrec_dns;
+    SBREC_DNS_FOR_EACH(sbrec_dns, ctx->ovnsb_idl) {
+        if (sbrec_dns->datapath->tunnel_key == dp_key
+            && (!strcmp(sbrec_dns->hostname, ds_cstr(&hostname)) ||
+                !strcmp(sbrec_dns->fqdn, ds_cstr(&hostname)))) {
+            break;
+        }
+    }
+
+    ds_destroy(&hostname);
+    if (!sbrec_dns) {
+        goto exit;
+    }
+
+    uint16_t ancount = 0;
+    uint64_t dns_ans_stub[128 / 8];
+    struct ofpbuf dns_answer = OFPBUF_STUB_INITIALIZER(dns_ans_stub);
+    if (query_type == 1 || query_type == 0xff) {
+        /* A records */
+        for (size_t i = 0; i < sbrec_dns->n_ipv4_addresses; i++) {
+            ovs_be32 ip;
+            if (!ip_parse(sbrec_dns->ipv4_addresses[i], &ip)) {
+                continue;
+            }
+
+            /* Copy the answer section */
+            /* Format of the answer section is
+             *  - NAME     -> The domain name
+             *  - TYPE     -> 2 octets containing one of the RR type codes
+             *  - CLASS    -> 2 octets which specify the class of the data in
+             *                the RDATA field.
+             *  - TTL      -> 32 bit unsigned int specifying the time interval
+             *                (in secs) that the resource record may be cached
+             *                before it should be discarded.
+             *  - RDLENGTH -> 16 bit integer specifying the length of the RDATA
+             *                field.
+             *  - RDATA    -> a variable length string of octets that describes
+             *               the resource. In our case it will be IP address of
+             *               the domain name.
+             */
+            ofpbuf_put(&dns_answer, in_hostname, idx);
+            ovs_be16 v = htons(1); /* Type 'A' */
+            ofpbuf_put(&dns_answer, &v, sizeof(ovs_be16));
+            ofpbuf_put(&dns_answer, &v, sizeof(ovs_be16)); /* Class 'IN' */
+            ovs_be32 ttl = htonl(3600);
+            ofpbuf_put(&dns_answer, &ttl, sizeof(ovs_be32));
+            v = htons(sizeof(ip)); /* Length of the RDATA field */
+            ofpbuf_put(&dns_answer, &v, sizeof(ovs_be16));
+            ofpbuf_put(&dns_answer, &ip, sizeof(ovs_be32));
+            ancount++;
+        }
+    }
+
+    if (query_type == 0x1c || query_type == 0xff) {
+        /* AAAA records */
+        for (size_t i = 0; i < sbrec_dns->n_ipv6_addresses; i++) {
+            struct in6_addr ip;
+            if (!ipv6_parse(sbrec_dns->ipv6_addresses[i], &ip)) {
+                continue;
+            }
+
+            ofpbuf_put(&dns_answer, in_hostname, idx);
+            ovs_be16 v = htons(0x1c); /* Type 'AAAA' */
+            ofpbuf_put(&dns_answer, &v, sizeof(ovs_be16));
+            v = htons(1); /* Class 'IN' */
+            ofpbuf_put(&dns_answer, &v, sizeof(ovs_be16));
+            ovs_be32 ttl = htonl(3600); /* TTL */
+            ofpbuf_put(&dns_answer, &ttl, sizeof(ovs_be32));
+            v = htons(sizeof(ip.s6_addr)); /* Length of the RDATA field */
+            ofpbuf_put(&dns_answer, &v, sizeof(ovs_be16));
+            ofpbuf_put(&dns_answer, &ip.s6_addr, sizeof(ip.s6_addr));
+            ancount++;
+        }
+    }
+
+    if (!ancount) {
+        ofpbuf_uninit(&dns_answer);
+        goto exit;
+    }
+
+    uint16_t new_l4_size = ntohs(in_udp->udp_len) +  dns_answer.size;
+    size_t new_packet_size = pkt_in->l4_ofs + new_l4_size;
+    struct dp_packet pkt_out;
+    dp_packet_init(&pkt_out, new_packet_size);
+    dp_packet_clear(&pkt_out);
+    dp_packet_prealloc_tailroom(&pkt_out, new_packet_size);
+    pkt_out_ptr = &pkt_out;
+
+    /* Copy the L2 and L3 headers from the pkt_in as they would remain same.*/
+    dp_packet_put(
+        &pkt_out, dp_packet_pull(pkt_in, pkt_in->l4_ofs), pkt_in->l4_ofs);
+
+    pkt_out.l2_5_ofs = pkt_in->l2_5_ofs;
+    pkt_out.l2_pad_size = pkt_in->l2_pad_size;
+    pkt_out.l3_ofs = pkt_in->l3_ofs;
+    pkt_out.l4_ofs = pkt_in->l4_ofs;
+
+    struct udp_header *out_udp = dp_packet_put(
+        &pkt_out, dp_packet_pull(pkt_in, UDP_HEADER_LEN), UDP_HEADER_LEN);
+
+    /* Copy the DNS header. */
+    struct dns_header *out_dns_header = dp_packet_put(
+        &pkt_out, dp_packet_pull(pkt_in, sizeof *out_dns_header),
+        sizeof *out_dns_header);
+
+    /* Set the response bit to 1 in the flags. */
+    out_dns_header->lo_flag |= 0x80;
+
+    /* Set the answer RR. */
+    out_dns_header->ancount = htons(ancount);
+
+    /* Copy the Query section. */
+    dp_packet_put(&pkt_out, dp_packet_data(pkt_in), dp_packet_size(pkt_in));
+
+    /* Copy the answer sections. */
+    dp_packet_put(&pkt_out, dns_answer.data, dns_answer.size);
+    ofpbuf_uninit(&dns_answer);
+
+    out_udp->udp_len = htons(new_l4_size);
+    out_udp->udp_csum = 0;
+
+    struct ip_header *out_ip = dp_packet_l3(&pkt_out);
+    out_ip->ip_tot_len = htons(pkt_out.l4_ofs - pkt_out.l3_ofs + new_l4_size);
+    /* Checksum needs to be initialized to zero. */
+    out_ip->ip_csum = 0;
+    out_ip->ip_csum = csum(out_ip, sizeof *out_ip);
+
+    pin->packet = dp_packet_data(&pkt_out);
+    pin->packet_len = dp_packet_size(&pkt_out);
+
+    success = 1;
+exit:
+    if (!ofperr) {
+        union mf_subvalue sv;
+        sv.u8_val = success;
+        mf_write_subfield(&dst, &sv, &pin->flow_metadata);
+    }
+    queue_msg(ofputil_encode_resume(pin, continuation, proto));
+    dp_packet_uninit(pkt_out_ptr);
+}
+
+static void
+process_packet_in(const struct ofp_header *msg, struct controller_ctx *ctx)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
@@ -718,6 +948,10 @@ process_packet_in(const struct ofp_header *msg)
                                        &continuation);
         break;
 
+    case ACTION_OPCODE_DNS_LKUP:
+        pinctrl_handle_dns_lkup(&packet, &pin, &userdata, &continuation, ctx);
+        break;
+
     default:
         VLOG_WARN_RL(&rl, "unrecognized packet-in opcode %"PRIu32,
                      ntohl(ah->opcode));
@@ -726,7 +960,8 @@ process_packet_in(const struct ofp_header *msg)
 }
 
 static void
-pinctrl_recv(const struct ofp_header *oh, enum ofptype type)
+pinctrl_recv(const struct ofp_header *oh, enum ofptype type,
+             struct controller_ctx *ctx)
 {
     if (type == OFPTYPE_ECHO_REQUEST) {
         queue_msg(make_echo_reply(oh));
@@ -738,7 +973,7 @@ pinctrl_recv(const struct ofp_header *oh, enum ofptype type)
         config.miss_send_len = UINT16_MAX;
         set_switch_config(swconn, &config);
     } else if (type == OFPTYPE_PACKET_IN) {
-        process_packet_in(oh);
+        process_packet_in(oh, ctx);
     } else if (type != OFPTYPE_ECHO_REPLY && type != OFPTYPE_BARRIER_REPLY) {
         if (VLOG_IS_DBG_ENABLED()) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(30, 300);
@@ -784,7 +1019,7 @@ pinctrl_run(struct controller_ctx *ctx, const struct lport_index *lports,
             enum ofptype type;
 
             ofptype_decode(&type, oh);
-            pinctrl_recv(oh, type);
+            pinctrl_recv(oh, type, ctx);
             ofpbuf_delete(msg);
         }
     }

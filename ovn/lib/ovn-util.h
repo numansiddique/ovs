@@ -64,4 +64,18 @@ char *alloc_nat_zone_key(const struct uuid *key, const char *type);
 const char *default_nb_db(void);
 const char *default_sb_db(void);
 
+#define DNS_HEADER_LEN 12
+OVS_PACKED(
+struct dns_header {
+    ovs_be16 id;
+    uint8_t lo_flag; /* QR (1), OPCODE (4), AA (1), TC (1) and RD (1) */
+    uint8_t hi_flag; /* RA (1), Z (3) and RCODE (4) */
+    ovs_be16 qdcount; /* Num of entries in the question section. */
+    ovs_be16 ancount; /* Num of resource records in the answer section. */
+    ovs_be16 nscount; /* Num of name server records in the authority record section. */
+    ovs_be16 arcount; /* Num of resource records in the additional records section. */
+});
+
+BUILD_ASSERT_DECL(DNS_HEADER_LEN == sizeof(struct dns_header));
+
 #endif
