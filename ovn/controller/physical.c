@@ -888,11 +888,20 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
                         &ofpacts);
     }
 
-    /* Add flows for VXLAN encapsulations.  Due to the limited amount of
-     * metadata, we only support VXLAN for connections to gateways.  The
-     * VNI is used to populate MFF_LOG_DATAPATH.  The gateway's logical
-     * port is set to MFF_LOG_INPORT.  Then the packet is resubmitted to
-     * table 16 to determine the logical egress port. */
+    /* Add flows for VXLAN encapsulations.  When using VXLAN, we have limited
+     * metadata.  We handle it in two different cases.
+     *
+     * For gateways (ovn-controller-vtep), the VNI is used to populate
+     * MFF_LOG_DATAPATH.  The gateway's logical port is set to MFF_LOG_INPORT.
+     * Then the packet is resubmitted to table 16 to determine the logical
+     * egress port.
+     *
+     * For a normal chassis, the VNI is used to populate MFF_LOG_DATAPATH.
+     * MFF_LOG_OUTPORT will get re-determined by the first table in the
+     * egress pipeline.  MFF_LOG_INPORT is not available and we have no
+     * way to determine what it was (at least in all cases, so we don't
+     * bother), but the only limitation that imposes is not being able
+     * to match on "inport" in egress ACLs. */
     HMAP_FOR_EACH (tun, hmap_node, &tunnels) {
         if (tun->type != VXLAN) {
             continue;
@@ -906,19 +915,32 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
                 continue;
             }
 
-            match_set_in_port(&match, tun->ofport);
-            match_set_tun_id(&match, htonll(binding->datapath->tunnel_key));
+            if (binding->chassis->n_vtep_logical_switches) {
+                /* A hardware_vtep based gateway. */
 
-            ofpbuf_clear(&ofpacts);
-            put_move(MFF_TUN_ID, 0,  MFF_LOG_DATAPATH, 0, 24, &ofpacts);
-            put_load(binding->tunnel_key, MFF_LOG_INPORT, 0, 15, &ofpacts);
-            /* For packets received from a vxlan tunnel, set a flag to that
-             * effect. */
-            put_load(1, MFF_LOG_FLAGS, MLF_RCV_FROM_VXLAN_BIT, 1, &ofpacts);
-            put_resubmit(OFTABLE_LOG_INGRESS_PIPELINE, &ofpacts);
+                match_set_in_port(&match, tun->ofport);
+                match_set_tun_id(&match, htonll(binding->datapath->tunnel_key));
 
-            ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 100, 0, &match,
-                            &ofpacts);
+                ofpbuf_clear(&ofpacts);
+                put_move(MFF_TUN_ID, 0,  MFF_LOG_DATAPATH, 0, 24, &ofpacts);
+                put_load(binding->tunnel_key, MFF_LOG_INPORT, 0, 15, &ofpacts);
+                /* For packets received from a vxlan tunnel, set a flag to that
+                 * effect. */
+                put_load(1, MFF_LOG_FLAGS, MLF_RCV_FROM_VXLAN_BIT, 1, &ofpacts);
+                put_resubmit(OFTABLE_LOG_INGRESS_PIPELINE, &ofpacts);
+
+                ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 100, 0, &match,
+                                &ofpacts);
+            } else {
+                /* A normal chassis. */
+                match_set_in_port(&match, tun->ofport);
+                match_set_tun_id(&match, htonll(binding->datapath->tunnel_key));
+                ofpbuf_clear(&ofpacts);
+                put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
+                ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 100, 0, &match,
+                                &ofpacts);
+                break;
+            }
         }
     }
 
