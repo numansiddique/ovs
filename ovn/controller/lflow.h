@@ -50,8 +50,9 @@ struct uuid;
 #define OFTABLE_PHY_TO_LOG            0
 #define OFTABLE_LOG_INGRESS_PIPELINE 16 /* First of LOG_PIPELINE_LEN tables. */
 #define OFTABLE_REMOTE_OUTPUT        32
-#define OFTABLE_LOCAL_OUTPUT         33
-#define OFTABLE_CHECK_LOOPBACK       34
+#define OFTABLE_SET_OUTPORT          33
+#define OFTABLE_LOCAL_OUTPUT         34
+#define OFTABLE_CHECK_LOOPBACK       35
 #define OFTABLE_LOG_EGRESS_PIPELINE  48 /* First of LOG_PIPELINE_LEN tables. */
 #define OFTABLE_SAVE_INPORT          64
 #define OFTABLE_LOG_TO_PHY           65

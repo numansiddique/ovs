@@ -871,18 +871,21 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
                      &ofpacts);
             put_move(mff_ovn_geneve, 0, MFF_LOG_OUTPORT, 0, 16,
                      &ofpacts);
+            put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
         } else if (tun->type == STT) {
             put_move(MFF_TUN_ID, 40, MFF_LOG_INPORT,   0, 15, &ofpacts);
             put_move(MFF_TUN_ID, 24, MFF_LOG_OUTPORT,  0, 16, &ofpacts);
             put_move(MFF_TUN_ID,  0, MFF_LOG_DATAPATH, 0, 24, &ofpacts);
+            put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
         } else if (tun->type == VXLAN) {
             /* We'll handle VXLAN later. */
-            continue;
+            put_move(MFF_TUN_ID, 0,  MFF_LOG_DATAPATH, 0, 24, &ofpacts);
+            put_load(0, MFF_LOG_INPORT, 0, 15, &ofpacts);
+            put_load(0, MFF_LOG_OUTPORT, 0, 15, &ofpacts);
+            put_resubmit(OFTABLE_SET_OUTPORT, &ofpacts);
         } else {
             OVS_NOT_REACHED();
         }
-
-        put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
 
         ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 100, 0, &match,
                         &ofpacts);
@@ -933,17 +936,57 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
                                 &ofpacts);
             } else {
                 /* A normal chassis. */
+                /*
                 match_set_in_port(&match, tun->ofport);
                 match_set_tun_id(&match, htonll(binding->datapath->tunnel_key));
                 ofpbuf_clear(&ofpacts);
-                put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
+                put_load(0, MFF_LOG_INPORT, 0, 15, &ofpacts);
+                put_load(0, MFF_LOG_OUTPORT, 0, 15, &ofpacts);
+                put_load(binding->datapath->tunnel_key, MFF_LOG_DATAPATH, 0,
+                         24, &ofpacts);
+                put_resubmit(OFTABLE_SET_OUTPORT, &ofpacts);
                 ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 100, 0, &match,
-                                &ofpacts);
+                                &ofpacts); */
                 break;
             }
         }
     }
 
+    struct match match;
+    const struct sbrec_datapath_binding *datapath;
+    SBREC_DATAPATH_BINDING_FOR_EACH(datapath, ctx->ovnsb_idl) {
+        match_init_catchall(&match);
+        ofpbuf_clear(&ofpacts);
+        match_set_metadata(&match, htonll(datapath->tunnel_key));
+        match_set_reg(&match, MFF_LOG_OUTPORT - MFF_REG0, 0);
+        struct eth_addr mac;
+        char *masked_value = "01:00:00:00:00:00";
+        eth_addr_from_string(masked_value, &mac);
+        match_set_dl_dst_masked(&match, mac, mac);
+        put_load(0xffff, MFF_LOG_OUTPORT, 0, 32, &ofpacts);
+        put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
+        ofctrl_add_flow(flow_table, OFTABLE_SET_OUTPORT, 100, 0, &match,
+                        &ofpacts);
+    }
+
+    SBREC_PORT_BINDING_FOR_EACH (binding, ctx->ovnsb_idl) {
+        ofpbuf_clear(&ofpacts);
+        for (size_t i = 0; i < binding->n_mac; i++) {
+            struct eth_addr mac;
+            if (!ovs_scan(binding->mac[i],
+                         ETH_ADDR_SCAN_FMT, ETH_ADDR_SCAN_ARGS(mac))) {
+                continue;
+            }
+            match_init_catchall(&match);
+            match_set_metadata(&match, htonll(binding->datapath->tunnel_key));
+            match_set_reg(&match, MFF_LOG_OUTPORT - MFF_REG0, 0);
+            match_set_dl_dst(&match, mac);
+            put_load(binding->tunnel_key, MFF_LOG_OUTPORT, 0, 32, &ofpacts);
+            put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
+            ofctrl_add_flow(flow_table, OFTABLE_SET_OUTPORT, 100, 0, &match,
+                            &ofpacts);
+        }
+    }
     /* Table 32, priority 150.
      * =======================
      *
@@ -952,7 +995,6 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
      * explicitly skip sending back out any tunnels and resubmit to table 33
      * for local delivery.
      */
-    struct match match;
     match_init_catchall(&match);
     ofpbuf_clear(&ofpacts);
     match_set_reg_masked(&match, MFF_LOG_FLAGS - MFF_REG0,
