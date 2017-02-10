@@ -2653,4 +2653,38 @@ tcp.flags = RST;
       <column name="external_ids"/>
     </group>
   </table>
+  <table name="DNS" title="Native DNS resolution">
+    <p>
+      Each row in this table stores the internal DNS resolution data.
+      <code>OVN</code> supports a simple native internal DNS
+      resolution. To resolve the DNS names, it looks for the
+      <ref column="hostname"/> first and then <ref column="fqdn"/> in this
+      table and if found, resolves it to the IPv4/IPv6 addresses defined based
+      on the query type (A/AAAA/ANY). If no match is found, the DNS request is
+      expected to be handled by an external DNS resolver.
+    </p>
+
+    <column name="datapath">
+      The logical data path to which the <ref column="hostname"/>,
+      <ref column="fqdn"/> (if defined) and the IP addresses belong to.
+    </column>
+
+    <column name="hostname">
+      The host name of the VIF.
+    </column>
+
+    <column name="fqdn">
+      Optional. The Fully qualified domain name of the VIF.
+    </column>
+
+    <column name="ipv4_addresses">
+      The IPv4 addresses to include in the DNS answer fields for A or ANY
+      query types.
+    </column>
+
+    <column name="ipv6_addresses">
+      The IPv6 addresses to include in the DNS answer fields for AAAA or ANY
+      query types.
+    </column>
+  </table>
 </database>
