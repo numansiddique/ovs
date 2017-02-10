@@ -112,7 +112,9 @@ enum ovn_stage {
     PIPELINE_STAGE(SWITCH, IN,  ARP_ND_RSP,    10, "ls_in_arp_rsp")       \
     PIPELINE_STAGE(SWITCH, IN,  DHCP_OPTIONS,  11, "ls_in_dhcp_options")  \
     PIPELINE_STAGE(SWITCH, IN,  DHCP_RESPONSE, 12, "ls_in_dhcp_response") \
-    PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,       13, "ls_in_l2_lkup")       \
+    PIPELINE_STAGE(SWITCH, IN,  DNS_LKUP,      13, "ls_in_dns_lkup") \
+    PIPELINE_STAGE(SWITCH, IN,  DNS_RESPONSE,  14, "ls_in_dns_response") \
+    PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,       15, "ls_in_l2_lkup")       \
                                                                       \
     /* Logical switch egress stages. */                               \
     PIPELINE_STAGE(SWITCH, OUT, PRE_LB,       0, "ls_out_pre_lb")     \
@@ -160,6 +162,7 @@ enum ovn_stage {
 #define REGBIT_CONNTRACK_COMMIT "reg0[1]"
 #define REGBIT_CONNTRACK_NAT    "reg0[2]"
 #define REGBIT_DHCP_OPTS_RESULT "reg0[3]"
+#define REGBIT_DNS_LKUP_RESULT  "reg0[4]"
 
 /* Register definitions for switches and routers. */
 #define REGBIT_NAT_REDIRECT     "reg9[0]"
@@ -2692,7 +2695,13 @@ build_acls(struct ovn_datapath *od, struct hmap *lflows)
     }
 
     /* Add 34000 priority flow to allow DHCP reply from ovn-controller to all
-     * logical ports of the datapath if the CMS has configured DHCPv4 options*/
+     * logical ports of the datapath if the CMS has configured DHCPv4 options.
+     *
+     * Add one 34000 priority flow to allow DNS reply from ovn-controller to all
+     * logical ports of the datapath if the CMS has configured DNS parameters
+     * for atleast one logical port.
+     * */
+    bool dns_flow_added = false;
     for (size_t i = 0; i < od->nbs->n_ports; i++) {
         if (od->nbs->ports[i]->dhcpv4_options) {
             const char *server_id = smap_get(
@@ -2743,6 +2752,16 @@ build_acls(struct ovn_datapath *od, struct hmap *lflows)
                     actions);
                 ds_destroy(&match);
             }
+        }
+
+        if (!dns_flow_added && smap_get(&od->nbs->ports[i]->options,
+                                        "hostname")) {
+            const char *actions = has_stateful ? "ct_commit; next;" :
+                "next;";
+            ovn_lflow_add(
+                lflows, od, S_SWITCH_OUT_ACL, 34000, "udp && udp.src == 53",
+                actions);
+            dns_flow_added = true;
         }
     }
 }
@@ -3182,8 +3201,51 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
     }
 
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbs) {
+           continue;
+        }
+
+        for (size_t i = 0; i < od->nbs->n_ports; i++) {
+            const struct nbrec_logical_switch_port *nbsp =
+                od->nbs->ports[i];
+
+            if (!nbsp || !od->sb || !smap_get(&nbsp->options, "hostname")) {
+                continue;
+            }
+
+            struct ds match;
+            struct ds action;
+            ds_init(&match);
+            ds_init(&action);
+            ds_put_cstr(&match, "ip && udp.dst == 53");
+            ds_put_format(&action,
+                          REGBIT_DNS_LKUP_RESULT" = dns_lkup(); next;");
+            ovn_lflow_add(lflows, od, S_SWITCH_IN_DNS_LKUP, 100,
+                          ds_cstr(&match), ds_cstr(&action));
+            ds_clear(&action);
+            ds_put_cstr(&match, " && "REGBIT_DNS_LKUP_RESULT);
+            ds_put_format(&action, "eth.dst <-> eth.src; ip4.src <-> ip4.dst; "
+                          "udp.dst = udp.src; udp.src = 53; outport = inport; "
+                          "flags.loopback = 1; output;");
+            ovn_lflow_add(lflows, od, S_SWITCH_IN_DNS_RESPONSE, 100,
+                          ds_cstr(&match), ds_cstr(&action));
+            ds_clear(&action);
+            ds_put_format(&action, "eth.dst <-> eth.src; ip6.src <-> ip6.dst; "
+                          "udp.dst = udp.src; udp.src = 53; outport = inport; "
+                          "flags.loopback = 1; output;");
+            ovn_lflow_add(lflows, od, S_SWITCH_IN_DNS_RESPONSE, 100,
+                          ds_cstr(&match), ds_cstr(&action));
+            ds_destroy(&match);
+            ds_destroy(&action);
+            break;
+        }
+    }
+
     /* Ingress table 11 and 12: DHCP options and response, by default goto next.
-     * (priority 0). */
+     * (priority 0).
+     * Ingress table 13 and 14: DNS lookup and response, by default goto next.
+     * (priority 0).*/
 
     HMAP_FOR_EACH (od, key_node, datapaths) {
         if (!od->nbs) {
@@ -3192,6 +3254,8 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
 
         ovn_lflow_add(lflows, od, S_SWITCH_IN_DHCP_OPTIONS, 0, "1", "next;");
         ovn_lflow_add(lflows, od, S_SWITCH_IN_DHCP_RESPONSE, 0, "1", "next;");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_DNS_LKUP, 0, "1", "next;");
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_DNS_RESPONSE, 0, "1", "next;");
     }
 
     /* Ingress table 13: Destination lookup, broadcast and multicast handling
@@ -5143,6 +5207,142 @@ sync_address_sets(struct northd_context *ctx)
     }
     shash_destroy(&sb_address_sets);
 }
+
+static void
+sync_dns_entries(struct northd_context *ctx, struct hmap *ports)
+{
+    struct dns_info {
+        struct hmap_node hmap_node;
+        const struct sbrec_datapath_binding *sb;
+        const char *hostname;
+        const char *fqdn;
+        char **ipv4_addresses;
+        size_t n_ipv4_addresses;
+        char **ipv6_addresses;
+        size_t n_ipv6_addresses;
+    };
+
+    struct hmap dns_map = HMAP_INITIALIZER(&dns_map);
+    struct ovn_port *op;
+
+    HMAP_FOR_EACH (op, key_node, ports) {
+        if (!op->nbsp || !op->sb || !lsp_is_enabled(op->nbsp) || op->nbrp) {
+            continue;
+        }
+
+        const char *hostname = smap_get(&op->nbsp->options, "hostname");
+        const char *fqdn = smap_get_def(&op->nbsp->options, "fqdn", "");
+
+        if (!hostname) {
+            continue;
+        }
+
+        struct dns_info *dns_info = xzalloc(sizeof *dns_info);
+        dns_info->sb = op->sb->datapath;
+        dns_info->hostname = hostname;
+        dns_info->fqdn = fqdn;
+        for (unsigned int i = 0; i < op->n_lsp_addrs; i++) {
+             for (size_t j = 0; j < op->lsp_addrs[i].n_ipv4_addrs; j++) {
+                 dns_info->ipv4_addresses = xrealloc(
+                     dns_info->ipv4_addresses,
+                     sizeof *dns_info->ipv4_addresses * (
+                         dns_info->n_ipv4_addresses + 1));
+                 dns_info->ipv4_addresses[dns_info->n_ipv4_addresses++] =
+                     op->lsp_addrs[i].ipv4_addrs[j].addr_s;
+             }
+
+             for (size_t j = 0; j < op->lsp_addrs[i].n_ipv6_addrs; j++) {
+                  dns_info->ipv6_addresses = xrealloc(
+                      dns_info->ipv6_addresses,
+                      sizeof *dns_info->ipv6_addresses * (
+                          dns_info->n_ipv6_addresses + 1));
+                  dns_info->ipv6_addresses[dns_info->n_ipv6_addresses++] =
+                      op->lsp_addrs[i].ipv6_addrs[j].addr_s;
+             }
+        }
+        size_t hash = uuid_hash(&dns_info->sb->header_.uuid);
+        hash = hash_string(dns_info->hostname, hash);
+        hash = hash_string(dns_info->fqdn, hash);
+        hmap_insert(&dns_map, &dns_info->hmap_node, hash);
+    }
+
+    const struct sbrec_dns *sbrec_dns, *next;
+    SBREC_DNS_FOR_EACH_SAFE(sbrec_dns, next, ctx->ovnsb_idl) {
+        size_t hash = uuid_hash(&sbrec_dns->datapath->header_.uuid);
+        hash = hash_string(sbrec_dns->hostname, hash);
+        hash = hash_string(sbrec_dns->fqdn, hash);
+        bool delete_dns_record = true;
+        struct dns_info *dns_info;
+        HMAP_FOR_EACH_WITH_HASH(dns_info, hmap_node, hash, &dns_map) {
+            if (!strcmp(dns_info->hostname, sbrec_dns->hostname)) {
+                /* Verify that the ipv4_addresses and ipv6_addresses are
+                 * same before removing from the hmap. */
+                if ((dns_info->n_ipv4_addresses !=
+                     sbrec_dns->n_ipv4_addresses) ||
+                    (dns_info->n_ipv6_addresses !=
+                     sbrec_dns->n_ipv6_addresses)) {
+                    continue;
+                }
+
+                delete_dns_record = false;
+                for (size_t i = 0; i < sbrec_dns->n_ipv4_addresses; i++) {
+                    if (strcmp(dns_info->ipv4_addresses[i],
+                               sbrec_dns->ipv4_addresses[i])) {
+                        delete_dns_record = true;
+                        break;
+                    }
+                }
+
+                if (delete_dns_record) {
+                    continue;
+                }
+
+                delete_dns_record = false;
+                for (size_t i = 0; i < sbrec_dns->n_ipv6_addresses; i++) {
+                    if (strcmp(dns_info->ipv6_addresses[i],
+                               sbrec_dns->ipv6_addresses[i])) {
+                        delete_dns_record = true;
+                        break;
+                    }
+                }
+
+                if (delete_dns_record) {
+                    continue;
+                }
+
+                hmap_remove(&dns_map, &dns_info->hmap_node);
+                free(dns_info->ipv4_addresses);
+                free(dns_info->ipv6_addresses);
+                free(dns_info);
+                delete_dns_record = false;
+                break;
+            }
+        }
+
+        if (delete_dns_record) {
+            sbrec_dns_delete(sbrec_dns);
+        }
+    }
+
+    struct dns_info *dns_info;
+    HMAP_FOR_EACH_POP(dns_info, hmap_node, &dns_map) {
+        struct sbrec_dns *sbrec_dns = sbrec_dns_insert(ctx->ovnsb_txn);
+        sbrec_dns_set_datapath(sbrec_dns, dns_info->sb);
+        sbrec_dns_set_hostname(sbrec_dns, dns_info->hostname);
+        sbrec_dns_set_fqdn(sbrec_dns, dns_info->fqdn);
+        sbrec_dns_set_ipv4_addresses(
+            sbrec_dns, (const char **) dns_info->ipv4_addresses,
+            dns_info->n_ipv4_addresses);
+        sbrec_dns_set_ipv6_addresses(
+            sbrec_dns, (const char **) dns_info->ipv6_addresses,
+            dns_info->n_ipv6_addresses);
+        free(dns_info->ipv4_addresses);
+        free(dns_info->ipv6_addresses);
+        free(dns_info);
+    }
+    hmap_destroy(&dns_map);
+}
+
 
 static void
 ovnnb_db_run(struct northd_context *ctx, struct ovsdb_idl_loop *sb_loop)
@@ -5157,6 +5357,7 @@ ovnnb_db_run(struct northd_context *ctx, struct ovsdb_idl_loop *sb_loop)
     build_lflows(ctx, &datapaths, &ports);
 
     sync_address_sets(ctx);
+    sync_dns_entries(ctx, &ports);
 
     struct ovn_datapath *dp, *next_dp;
     HMAP_FOR_EACH_SAFE (dp, next_dp, key_node, &datapaths) {
@@ -5553,6 +5754,11 @@ main(int argc, char *argv[])
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_address_set);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_address_set_col_name);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_address_set_col_addresses);
+
+    ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_dns);
+    add_column_noalert(ovnsb_idl_loop.idl, &sbrec_dns_col_datapath);
+    add_column_noalert(ovnsb_idl_loop.idl, &sbrec_dns_col_hostname);
+    add_column_noalert(ovnsb_idl_loop.idl, &sbrec_dns_col_fqdn);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_chassis);
     ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_nb_cfg);

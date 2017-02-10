@@ -316,6 +316,23 @@
           If set, indicates the maximum burst size for data sent from this
           interface, in bits.
         </column>
+
+        <column name="options" key="hostname">
+          If set, indicates the hostname associated with the logical port.
+          <code>OVN</code> supports a simple native internal DNS
+          resolution. Any DNS query for this host name from the VIFs belonging
+          to the same logical network would be resolved by
+          <code>OVN</code> to the IP addresses defined in the
+          <ref column="addresses"/> field. If no match is found, the DNS query
+          request is expected to be handled by an external DNS resolver.
+        </column>
+
+        <column name="options" key="fqdn">
+          If set, indicates the fqdn associated with the logical port.
+          Any DNS query for this fqdn would be resolved by
+          <code>ovn-controller</code> to the IP addresses defined in the
+          <ref column="addresses"/> field.
+        </column>
       </group>
     </group>
 
@@ -1898,5 +1915,4 @@
       <column name="external_ids"/>
     </group>
   </table>
-
 </database>
