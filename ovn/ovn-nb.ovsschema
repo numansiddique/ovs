@@ -1,7 +1,7 @@
 {
     "name": "OVN_Northbound",
-    "version": "5.6.0",
-    "cksum": "1358108512 15019",
+    "version": "5.6.1",
+    "cksum": "282603683 15182",
     "tables": {
         "NB_Global": {
             "columns": {
@@ -207,6 +207,9 @@
                 "mac": {"type": "string"},
                 "peer": {"type": {"key": "string", "min": 0, "max": 1}},
                 "enabled": {"type": {"key": "boolean", "min": 0, "max": 1}},
+                "ipv6_ra_configs": {
+                    "type": {"key": "string", "value": "string",
+                             "min": 0, "max": "unlimited"}},
                 "external_ids": {
                     "type": {"key": "string", "value": "string",
                              "min": 0, "max": "unlimited"}}},

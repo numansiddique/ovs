@@ -1802,7 +1802,8 @@ pinctrl_handle_nd(const struct flow *ip_flow, const struct match *md,
         struct prefix_data *prefixes = NULL;
         int num_prefixes = 0;
 
-        while (userdata->size - args_len > 0) {
+        uint32_t remaining_len = userdata->size - args_len;
+        while (userdata->size > remaining_len) {
             struct ipv6_nd_ra_opt_header *opt =
                 ofpbuf_try_pull(userdata, sizeof(*opt));
 
