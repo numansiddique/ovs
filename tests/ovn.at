@@ -3828,6 +3828,8 @@ AT_CHECK([cat 1.packets | cut -c -48], [0], [expout])
 cat 1.expected | cut -c 53- > expout
 AT_CHECK([cat 1.packets | cut -c 53-], [0], [expout])
 
+AT_CHECK([echo hi], [1], [1])
+
 # ovs-ofctl also resumes the packets and this causes other ports to receive
 # the DHCP request packet. So reset the pcap files so that its easier to test.
 reset_pcap_file hv1-vif1 hv1/vif1

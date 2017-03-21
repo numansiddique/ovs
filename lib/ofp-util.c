@@ -3419,6 +3419,7 @@ decode_nx_packet_in2(const struct ofp_header *oh, bool loose,
         }
 
         case NXPINT_METADATA:
+            VLOG_INFO("NUMAN : %s : %s : %d : NXPINT_METADATA : calling oxm_decode_match \n", __FILE__, __FUNCTION__, __LINE__);
             error = oxm_decode_match(payload.msg, ofpbuf_msgsize(&payload),
                                      loose, tun_table, vl_mff_map,
                                      &pin->flow_metadata);
@@ -3583,10 +3584,12 @@ ofputil_decode_packet_in(const struct ofp_header *oh, bool loose,
         pin->packet = b.data;
         pin->packet_len = b.size;
     } else if (raw == OFPRAW_NXT_PACKET_IN2 || raw == OFPRAW_NXT_RESUME) {
+        VLOG_INFO("NUMAN : %s : %s : %d : raw = IN2  or RESUME : raw = [%x] : OFPRAW_NXT_PACKET_IN2 = [%x] : OFPRAW_NXT_RESUME = [%x] \n", __FILE__, __FUNCTION__, __LINE__, raw, OFPRAW_NXT_PACKET_IN2, OFPRAW_NXT_RESUME);
         enum ofperr error = decode_nx_packet_in2(oh, loose, tun_table,
                                                  vl_mff_map, pin, &total_len,
                                                  &buffer_id, continuation);
         if (error) {
+            VLOG_INFO("NUMAN : %s : %s : %d : decode_nx_packet_in2 returned error \n", __FILE__, __FUNCTION__, __LINE__);
             return error;
         }
     } else {

@@ -3578,11 +3578,13 @@ handle_nxt_resume(struct ofconn *ofconn, const struct ofp_header *oh)
     struct ofputil_packet_in_private pin;
     enum ofperr error;
 
+    VLOG_INFO("NUMAN : %s : %s : %d entered \n", __FILE__, __FUNCTION__, __LINE__);
     error = ofputil_decode_packet_in_private(oh, false,
                                              ofproto_get_tun_tab(ofproto),
                                              &ofproto->vl_mff_map, &pin, NULL,
                                              NULL);
     if (error) {
+        VLOG_INFO("NUMAN : %s : %s : %d : ofputil_decode_packet_in_private RETURNED  error \n", __FILE__, __FUNCTION__, __LINE__);
         return error;
     }
 
@@ -7895,6 +7897,7 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
 
     error = ofptype_decode(&type, oh);
     if (error) {
+        VLOG_INFO("NUMAN : %s : %s : %d : ofptype_decode returned error [%d] : [%s]\n", __FILE__, __FUNCTION__, __LINE__, error, ofperr_to_string(error));
         return error;
     }
     if (oh->version >= OFP13_VERSION && ofpmsg_is_stat_request(oh)
@@ -7902,6 +7905,7 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
         /* We have no buffer implementation for multipart requests.
          * Report overflow for requests which consists of multiple
          * messages. */
+        VLOG_INFO("NUMAN : %s : %s : %d : BUFFER_OVERFLOW error \n", __FILE__, __FUNCTION__, __LINE__);
         return OFPERR_OFPBRC_MULTIPART_BUFFER_OVERFLOW;
     }
 
@@ -8096,8 +8100,8 @@ handle_openflow(struct ofconn *ofconn, const struct ofpbuf *ofp_msg)
     OVS_EXCLUDED(ofproto_mutex)
 {
     enum ofperr error = handle_openflow__(ofconn, ofp_msg);
-
     if (error) {
+        VLOG_INFO("NUMAN : %s : %s : %d : callong ofconn_send_error\n", __FILE__, __FUNCTION__, __LINE__);
         ofconn_send_error(ofconn, ofp_msg->data, error);
     }
     COVERAGE_INC(ofproto_recv_openflow);

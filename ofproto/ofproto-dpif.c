@@ -4680,6 +4680,7 @@ nxt_resume(struct ofproto *ofproto_,
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
 
+    VLOG_INFO("NUMAN : %s : %s : %d entered \n", __FILE__, __FUNCTION__, __LINE__);
     /* Translate pin into datapath actions. */
     uint64_t odp_actions_stub[1024 / 8];
     struct ofpbuf odp_actions = OFPBUF_STUB_INITIALIZER(odp_actions_stub);
@@ -4715,6 +4716,7 @@ nxt_resume(struct ofproto *ofproto_,
     ofpbuf_uninit(&odp_actions);
     dp_packet_uninit(&packet);
 
+    VLOG_INFO("NUMAN : %s : %s : %d : returning error code : [%d] [%s]\n", __FILE__, __FUNCTION__, __LINE__, error, ofperr_to_string(error));
     return error;
 }
 

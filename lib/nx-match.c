@@ -532,6 +532,11 @@ nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
 
         error = nx_pull_match_entry(&b, cookie != NULL, vl_mff_map, &field,
                                     &value, &mask);
+        if (!error) {
+             VLOG_INFO("NUMAN : %s : %s : %d : mf_field id = [%x] : field name = [%s] : extra name = [%s]\n",  __FILE__, __FUNCTION__, __LINE__, field->id, field->name, field->extra_name ? field->extra_name : "NULL");
+              VLOG_INFO("NUMAN : %s : %s : %d : field prereq = [%x]\n", __FILE__, __FUNCTION__, __LINE__, field->prereqs);
+        }
+
         if (error) {
             if (error == OFPERR_OFPBMC_BAD_FIELD && !strict) {
                 continue;
@@ -546,6 +551,9 @@ nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
                 *cookie_mask = mask.be64;
             }
         } else if (strict && !mf_are_match_prereqs_ok(field, match)) {
+            VLOG_INFO("NUMAN : %s : %s : %d : setting the error OFPERR_OFPBMC_BAD_PREREQ \n", __FILE__, __FUNCTION__, __LINE__);
+            VLOG_INFO("NUMAN : %s : %s : %d : mf_field id = [%x] : field name = [%s] : extra name = [%s]\n",  __FILE__, __FUNCTION__, __LINE__, field->id, field->name, field->extra_name ? field->extra_name : "NULL");
+            VLOG_INFO("NUMAN : %s : %s : %d : field prereq = [%x]\n", __FILE__, __FUNCTION__, __LINE__, field->prereqs);
             error = OFPERR_OFPBMC_BAD_PREREQ;
         } else if (!mf_is_all_wild(field, &match->wc)) {
             error = OFPERR_OFPBMC_DUP_FIELD;
