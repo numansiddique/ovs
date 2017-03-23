@@ -1197,6 +1197,7 @@ dpif_sflow_read_actions(const struct flow *flow,
             break;
 	case OVS_ACTION_ATTR_SAMPLE:
 	case OVS_ACTION_ATTR_CLONE:
+	case OVS_ACTION_ATTR_CT_CLEAR:
 	case OVS_ACTION_ATTR_UNSPEC:
 	case __OVS_ACTION_ATTR_MAX:
 	default:
