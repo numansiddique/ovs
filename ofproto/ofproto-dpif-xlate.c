@@ -5389,6 +5389,12 @@ compose_conntrack_action(struct xlate_ctx *ctx, struct ofpact_conntrack *ofc)
 }
 
 static void
+compose_conntrack_clear_action(struct xlate_ctx *ctx)
+{
+    nl_msg_put_flag(ctx->odp_actions, OVS_ACTION_ATTR_CT_CLEAR);
+}
+
+static void
 recirc_for_mpls(const struct ofpact *a, struct xlate_ctx *ctx)
 {
     /* No need to recirculate if already exiting. */
@@ -5883,6 +5889,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
 
         case OFPACT_CT_CLEAR:
             clear_conntrack(ctx);
+            compose_conntrack_clear_action(ctx);
             break;
 
         case OFPACT_NAT:
