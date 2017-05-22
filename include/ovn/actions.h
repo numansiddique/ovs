@@ -71,7 +71,8 @@ struct simap;
     OVNACT(PUT_DHCPV4_OPTS, ovnact_put_opts)   \
     OVNACT(PUT_DHCPV6_OPTS, ovnact_put_opts)   \
     OVNACT(SET_QUEUE,       ovnact_set_queue)       \
-    OVNACT(DNS_LOOKUP,      ovnact_dns_lookup)
+    OVNACT(DNS_LOOKUP,      ovnact_dns_lookup)      \
+    OVNACT(PUT_ND_RA_OPTS,  ovnact_put_opts)
 
 /* enum ovnact_type, with a member OVNACT_<ENUM> for each action. */
 enum OVS_PACKED_ENUM ovnact_type {
@@ -400,6 +401,14 @@ enum action_opcode {
      *
      */
     ACTION_OPCODE_DNS_LOOKUP,
+
+    /* "result = put_nd_ra_opts(option, ...)".
+     * Arguments follow the action_header, in this format:
+     *   - A 32-bit or 64-bit OXM header designating the result field.
+     *   - A 32-bit integer specifying a bit offset within the result field.
+     *   - Any number of ICMPv6 options.
+     */
+    ACTION_OPCODE_PUT_ND_RA_OPTS,
 };
 
 /* Header. */
@@ -419,6 +428,9 @@ struct ovnact_parse_params {
 
     /* hmap of 'struct gen_opts_map'  to support 'put_dhcpv6_opts' action */
     const struct hmap *dhcpv6_opts;
+
+    /* hmap of 'struct gen_opts_map' to support 'put_nd_ra_opts' action */
+    const struct hmap *nd_ra_opts;
 
     /* Each OVN flow exists in a logical table within a logical pipeline.
      * These parameters express this context for a set of OVN actions being

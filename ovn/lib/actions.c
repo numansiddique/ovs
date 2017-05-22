@@ -1437,7 +1437,7 @@ parse_put_opts(struct action_context *ctx, const struct expr_field *dst,
                struct ovnact_put_opts *po, const struct hmap *gen_opts,
                const char *opts_type)
 {
-    lexer_get(ctx->lexer); /* Skip put_dhcp[v6]_opts. */
+    lexer_get(ctx->lexer); /* Skip put_dhcp[v6]_opts/put_nd_ra_opts. */
     lexer_get(ctx->lexer); /* Skip '('. */
 
     /* Validate that the destination is a 1-bit, modifiable field. */
@@ -1770,6 +1770,161 @@ static void
 ovnact_dns_lookup_free(struct ovnact_dns_lookup *dl OVS_UNUSED)
 {
 }
+
+/* Parses the "put_nd_ra_opts" action.
+ * The caller has already consumed "<dst> =", so this just parses the rest. */
+static void
+parse_put_nd_ra_opts(struct action_context *ctx, const struct expr_field *dst,
+                     struct ovnact_put_opts *po)
+{
+    parse_put_opts(ctx, dst, po, ctx->pp->nd_ra_opts, "IPv6 ND RA");
+
+    if (ctx->lexer->error) {
+        return;
+    }
+
+    bool addr_mode_stateful = false;
+    bool prefix_set = false;
+    bool slla_present = false;
+    /* Let's validate the options. */
+    for (struct ovnact_gen_option *o = po->options;
+            o < &po->options[po->n_options]; o++) {
+        const union expr_constant *c = o->value.values;
+        if (o->value.n_values > 1) {
+            lexer_error(ctx->lexer, "parse_put_nd_ra_opts -Invalid value for"
+                        " the option %s.", o->option->name);
+            return;
+        }
+
+        switch(o->option->code) {
+        case ND_RA_FLAG_ADDR_MODE:
+            if (!c->string || (strcmp(c->string, "slaac") &&
+                               strcmp(c->string, "dhcpv6_stateful") &&
+                               strcmp(c->string, "dhcpv6_stateless"))) {
+                lexer_error(ctx->lexer, "parse_put_nd_ra_opts -Invalid value "
+                            "for the option %s.", o->option->name);
+                return;
+            }
+
+            if (!strcmp(c->string, "dhcpv6_stateful")) {
+                addr_mode_stateful = true;
+            }
+            break;
+
+        case ND_RA_OPT_SLLA:
+            if (c->format != LEX_F_ETHERNET) {
+                lexer_error(ctx->lexer, "parse_put_nd_ra_opts -Invalid value "
+                           "for the option %s.", o->option->name);
+            }
+            slla_present = true;
+            break;
+
+        case ND_RA_OPT_PREFIX:
+            if (c->format != LEX_F_IPV6 || !c->masked) {
+                lexer_error(ctx->lexer, "parse_put_nd_ra_opts -Invalid value "
+                            "for the option %s.", o->option->name);
+            }
+            prefix_set = true;
+            break;
+
+        case ND_RA_OPT_MTU:
+            if (c->format != LEX_F_DECIMAL) {
+                lexer_error(ctx->lexer, "parse_put_nd_ra_opts -Invalid value "
+                            "for the option %s.", o->option->name);
+            }
+            break;
+        }
+    }
+
+    if (ctx->lexer->error) {
+        return;
+    }
+
+    if (!slla_present) {
+        lexer_error(ctx->lexer, "parse_put_nd_ra_opts - slla option not"
+                    " present.");
+        return;
+    }
+
+    if (addr_mode_stateful && prefix_set) {
+        lexer_error(ctx->lexer, "parse_put_nd_ra_opts - prefix option can't be"
+                    " set when address mode is dhcpv6_stateful.");
+        return;
+    }
+
+    if (!addr_mode_stateful && !prefix_set) {
+        lexer_error(ctx->lexer, "parse_put_nd_ra_opts - prefix option needs "
+                    "to be set when address mode is slaac/dhcpv6_stateless.");
+        return;
+    }
+
+    add_prerequisite(ctx, "ip6");
+}
+
+static void
+format_PUT_ND_RA_OPTS(const struct ovnact_put_opts *po,
+                      struct ds *s)
+{
+    format_put_opts("put_nd_ra_opts", po, s);
+}
+
+static void
+encode_put_nd_ra_option(const struct ovnact_gen_option *o,
+                        struct ofpbuf *ofpacts)
+{
+    struct ipv6_nd_ra_opt_header *opt = ofpbuf_put_zeros(ofpacts, sizeof *opt);
+    opt->code = htons(o->option->code);
+    const union expr_constant *c = o->value.values;
+
+    if (!strcmp(o->option->type, "ipv6")) {
+        opt->len = htons(sizeof(struct in6_addr));
+        if (c->masked) {
+            opt->len += htons(1);
+            uint8_t prefix_len = ipv6_count_cidr_bits(&c->mask.ipv6);
+            ofpbuf_put(ofpacts, &prefix_len, 1);
+        }
+        ofpbuf_put(ofpacts, &c->value.ipv6, sizeof(struct in6_addr));
+    } else if (!strcmp(o->option->type, "mac")) {
+        opt->len = htons(sizeof(struct eth_addr));
+        ofpbuf_put(ofpacts, &c->value.mac, sizeof(struct eth_addr));
+    } else if (!strcmp(o->option->type, "uint32")) {
+        opt->len = htons(sizeof(ovs_be32));
+        ofpbuf_put(ofpacts, &c->value.be32_int, sizeof(ovs_be32));
+    } else if (!strcmp(o->option->type, "str")) {
+        if (o->option->code == ND_RA_FLAG_ADDR_MODE) {
+            opt->len = htons(1);
+            uint8_t addr_mode = 0; /* Default 0 is slaac. */
+            if (!strcmp(c->string, "dhcpv6_stateful")) {
+                addr_mode = IPV6_ND_RA_FLAG_MANAGED_ADDR_CONFIG;
+            } else if (!strcmp(c->string, "dhcpv6_stateless")) {
+                addr_mode = IPV6_ND_RA_FLAG_OTHER_ADDR_CONFIG;
+            }
+            ofpbuf_put(ofpacts, &addr_mode, 1);
+        }
+    }
+}
+
+static void
+encode_PUT_ND_RA_OPTS(const struct ovnact_put_opts *po OVS_UNUSED,
+                      const struct ovnact_encode_params *ep OVS_UNUSED,
+                      struct ofpbuf *ofpacts OVS_UNUSED)
+{
+    struct mf_subfield dst = expr_resolve_field(&po->dst);
+
+    size_t oc_offset = encode_start_controller_op(
+        ACTION_OPCODE_PUT_ND_RA_OPTS, true, ofpacts);
+    nx_put_header(ofpacts, dst.field->id, OFP13_VERSION, false);
+    ovs_be32 ofs = htonl(dst.ofs);
+    ofpbuf_put(ofpacts, &ofs, sizeof ofs);
+
+    for (const struct ovnact_gen_option *o = po->options;
+         o < &po->options[po->n_options]; o++) {
+        encode_put_nd_ra_option(o, ofpacts);
+    }
+
+    encode_finish_controller_op(oc_offset, ofpacts);
+}
+
 
 /* Parses an assignment or exchange or put_dhcp_opts action. */
 static void
@@ -1796,6 +1951,10 @@ parse_set_action(struct action_context *ctx)
         } else if (!strcmp(ctx->lexer->token.s, "dns_lookup")
                    && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
             parse_dns_lookup(ctx, &lhs, ovnact_put_DNS_LOOKUP(ctx->ovnacts));
+        } else if (!strcmp(ctx->lexer->token.s, "put_nd_ra_opts")
+                && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
+            parse_put_nd_ra_opts(ctx, &lhs,
+                                 ovnact_put_PUT_ND_RA_OPTS(ctx->ovnacts));
         } else {
             parse_assignment_action(ctx, false, &lhs);
         }

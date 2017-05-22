@@ -63,6 +63,7 @@ static void consider_logical_flow(const struct lport_index *lports,
                                   const struct sbrec_chassis *chassis,
                                   struct hmap *dhcp_opts,
                                   struct hmap *dhcpv6_opts,
+                                  struct hmap *nd_ra_opts,
                                   uint32_t *conj_id_ofs,
                                   const struct shash *addr_sets,
                                   struct hmap *flow_table);
@@ -143,15 +144,19 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
                     dhcpv6_opt_row->type);
     }
 
+    struct hmap nd_ra_opts = HMAP_INITIALIZER(&nd_ra_opts);
+    nd_ra_opts_init(&nd_ra_opts);
+
     SBREC_LOGICAL_FLOW_FOR_EACH (lflow, ctx->ovnsb_idl) {
         consider_logical_flow(lports, mcgroups, lflow, local_datapaths,
                               group_table, chassis,
-                              &dhcp_opts, &dhcpv6_opts, &conj_id_ofs,
-                              addr_sets, flow_table);
+                              &dhcp_opts, &dhcpv6_opts, &nd_ra_opts,
+                              &conj_id_ofs, addr_sets, flow_table);
     }
 
     dhcp_opts_destroy(&dhcp_opts);
     dhcp_opts_destroy(&dhcpv6_opts);
+    nd_ra_opts_destroy(&nd_ra_opts);
 }
 
 static void
@@ -163,6 +168,7 @@ consider_logical_flow(const struct lport_index *lports,
                       const struct sbrec_chassis *chassis,
                       struct hmap *dhcp_opts,
                       struct hmap *dhcpv6_opts,
+                      struct hmap *nd_ra_opts,
                       uint32_t *conj_id_ofs,
                       const struct shash *addr_sets,
                       struct hmap *flow_table)
@@ -196,6 +202,7 @@ consider_logical_flow(const struct lport_index *lports,
         .symtab = &symtab,
         .dhcp_opts = dhcp_opts,
         .dhcpv6_opts = dhcpv6_opts,
+        .nd_ra_opts = nd_ra_opts,
 
         .pipeline = ingress ? OVNACT_P_INGRESS : OVNACT_P_EGRESS,
         .n_tables = LOG_PIPELINE_LEN,

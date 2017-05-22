@@ -1559,19 +1559,15 @@ execute_get_mac_bind(const struct ovnact_get_mac_bind *bind,
 }
 
 static void
-execute_put_dhcp_opts(const struct ovnact_put_opts *pdo,
-                      const char *name, struct flow *uflow,
-                      struct ovs_list *super)
+execute_put_opts(const struct ovnact_put_opts *po,
+                 const char *name, struct flow *uflow,
+                 struct ovs_list *super)
 {
-    ovntrace_node_append(
-        super, OVNTRACE_NODE_ERROR,
-        "/* We assume that this packet is DHCPDISCOVER or DHCPREQUEST. */");
-
     /* Format the put_dhcp_opts action. */
     struct ds s = DS_EMPTY_INITIALIZER;
-    for (const struct ovnact_gen_option *o = pdo->options;
-         o < &pdo->options[pdo->n_options]; o++) {
-        if (o != pdo->options) {
+    for (const struct ovnact_gen_option *o = po->options;
+         o < &po->options[po->n_options]; o++) {
+        if (o != po->options) {
             ds_put_cstr(&s, ", ");
         }
         ds_put_format(&s, "%s = ", o->option->name);
@@ -1581,19 +1577,38 @@ execute_put_dhcp_opts(const struct ovnact_put_opts *pdo,
                          name, ds_cstr(&s));
     ds_destroy(&s);
 
-    struct mf_subfield dst = expr_resolve_field(&pdo->dst);
+    struct mf_subfield dst = expr_resolve_field(&po->dst);
     if (!mf_is_register(dst.field->id)) {
         /* Format assignment. */
         struct ds s = DS_EMPTY_INITIALIZER;
-        expr_field_format(&pdo->dst, &s);
+        expr_field_format(&po->dst, &s);
         ovntrace_node_append(super, OVNTRACE_NODE_MODIFY,
                              "%s = 1", ds_cstr(&s));
         ds_destroy(&s);
     }
 
-    struct mf_subfield sf = expr_resolve_field(&pdo->dst);
+    struct mf_subfield sf = expr_resolve_field(&po->dst);
     union mf_subvalue sv = { .u8_val = 1 };
     mf_write_subfield_flow(&sf, &sv, uflow);
+}
+
+static void
+execute_put_dhcp_opts(const struct ovnact_put_opts *pdo,
+                      const char *name, struct flow *uflow,
+                      struct ovs_list *super)
+{
+    ovntrace_node_append(
+        super, OVNTRACE_NODE_ERROR,
+        "/* We assume that this packet is DHCPDISCOVER or DHCPREQUEST. */");
+    execute_put_opts(pdo, name, uflow, super);
+}
+
+static void
+execute_put_nd_ra_opts(const struct ovnact_put_opts *pdo,
+                       const char *name, struct flow *uflow,
+                       struct ovs_list *super)
+{
+    execute_put_opts(pdo, name, uflow, super);
 }
 
 static void
@@ -1817,6 +1832,11 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
         case OVNACT_PUT_DHCPV6_OPTS:
             execute_put_dhcp_opts(ovnact_get_PUT_DHCPV6_OPTS(a),
                                   "put_dhcpv6_opts", uflow, super);
+            break;
+
+        case OVNACT_PUT_ND_RA_OPTS:
+            execute_put_nd_ra_opts(ovnact_get_PUT_DHCPV6_OPTS(a),
+                                   "put_nd_ra_opts", uflow, super);
             break;
 
         case OVNACT_SET_QUEUE:

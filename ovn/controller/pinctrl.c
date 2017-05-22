@@ -78,6 +78,9 @@ static void pinctrl_handle_nd_na(const struct flow *ip_flow,
                                  struct ofpbuf *userdata);
 static void reload_metadata(struct ofpbuf *ofpacts,
                             const struct match *md);
+static void pinctrl_handle_put_nd_ra_opts(
+    const struct flow *ip_flow, struct ofputil_packet_in *pin,
+    struct ofpbuf *userdata, struct ofpbuf *continuation OVS_UNUSED);
 
 COVERAGE_DEFINE(pinctrl_drop_put_mac_binding);
 
@@ -978,6 +981,10 @@ process_packet_in(const struct ofp_header *msg, struct controller_ctx *ctx)
         pinctrl_handle_dns_lookup(&packet, &pin, &userdata, &continuation, ctx);
         break;
 
+    case ACTION_OPCODE_PUT_ND_RA_OPTS:
+        pinctrl_handle_put_nd_ra_opts(&headers, &pin, &userdata, &continuation);
+        break;
+
     default:
         VLOG_WARN_RL(&rl, "unrecognized packet-in opcode %"PRIu32,
                      ntohl(ah->opcode));
@@ -1800,4 +1807,140 @@ pinctrl_handle_nd_na(const struct flow *ip_flow, const struct match *md,
 exit:
     dp_packet_uninit(&packet);
     ofpbuf_uninit(&ofpacts);
+}
+
+static void
+pinctrl_handle_put_nd_ra_opts(
+    const struct flow *in_flow, struct ofputil_packet_in *pin,
+    struct ofpbuf *userdata, struct ofpbuf *continuation OVS_UNUSED)
+{
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+    enum ofp_version version = rconn_get_version(swconn);
+    enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
+    struct dp_packet *pkt_out_ptr = NULL;
+    uint32_t success = 0;
+
+    /* Parse result field. */
+    const struct mf_field *f;
+    enum ofperr ofperr = nx_pull_header(userdata, NULL, &f, NULL);
+    if (ofperr) {
+       VLOG_WARN_RL(&rl, "bad result OXM (%s)", ofperr_to_string(ofperr));
+       goto exit;
+    }
+
+    /* Parse result offset. */
+    ovs_be32 *ofsp = ofpbuf_try_pull(userdata, sizeof *ofsp);
+    if (!ofsp) {
+        VLOG_WARN_RL(&rl, "offset not present in the userdata");
+        goto exit;
+    }
+
+    /* Check that the result is valid and writable. */
+    struct mf_subfield dst = { .field = f, .ofs = ntohl(*ofsp), .n_bits = 1 };
+    ofperr = mf_check_dst(&dst, NULL);
+    if (ofperr) {
+        VLOG_WARN_RL(&rl, "bad result bit (%s)", ofperr_to_string(ofperr));
+        goto exit;
+    }
+
+    if (!userdata->size) {
+        VLOG_WARN_RL(&rl, "IPv6 ND RA options not present in the userdata");
+        goto exit;
+    }
+
+    if (!is_icmpv6(in_flow, NULL) || in_flow->tp_dst != htons(0) ||
+        in_flow->tp_src != htons(ND_ROUTER_SOLICIT)) {
+        VLOG_WARN_RL(&rl, "put_nd_ra action on invalid or unsupported packet");
+        goto exit;
+    }
+
+    ovs_be32 mtu = 0;
+    uint8_t mo_flags = 0;
+    struct eth_addr sll = eth_addr_zero;
+    struct prefix_data {
+        uint8_t prefix_len;
+        ovs_be128 prefix;
+    };
+    struct prefix_data *prefixes = NULL;
+    int num_prefixes = 0;
+
+    while (userdata->size) {
+        struct ipv6_nd_ra_opt_header *opt =
+            ofpbuf_try_pull(userdata, sizeof(*opt));
+        uint16_t opt_len = ntohs(opt->len);
+        if (!opt || opt_len > userdata->size) {
+            break;
+        }
+
+        uint8_t *opt_data = ofpbuf_try_pull(userdata, opt_len);
+        if (!opt_data) {
+            break;
+        }
+
+        switch(ntohs(opt->code)) {
+        case ND_RA_FLAG_ADDR_MODE:
+            mo_flags = *opt_data;
+            break;
+
+        case ND_RA_OPT_SLLA:
+            if (opt_len == sizeof(struct eth_addr)) {
+                memcpy(&sll, opt_data, sizeof(struct eth_addr));
+            }
+            break;
+
+        case ND_RA_OPT_PREFIX:
+            if (opt_len == (sizeof(uint8_t) + sizeof(ovs_be128))) {
+                prefixes = xrealloc(
+                    prefixes, sizeof(*prefixes) * (num_prefixes + 1));
+                prefixes[num_prefixes].prefix_len = *opt_data++;
+                memcpy(&prefixes[num_prefixes].prefix, opt_data,
+                       sizeof(ovs_be128));
+                num_prefixes++;
+            }
+            break;
+
+        case ND_RA_OPT_MTU:
+            if (opt_len == sizeof(ovs_be32)) {
+                mtu = *(ALIGNED_CAST(const ovs_be32 *, opt_data));
+            }
+            break;
+        }
+    }
+
+    if (eth_addr_is_zero(sll)) {
+        VLOG_WARN_RL(&rl, "IPv6 ND RA option - source lla not present in the"
+                     " userdata");
+        free(prefixes);
+        goto exit;
+    }
+
+    uint64_t pkt_out_stub[256 / 8];
+    struct dp_packet pkt_out;
+    dp_packet_use_stub(&pkt_out, pkt_out_stub, sizeof pkt_out_stub);
+    pkt_out_ptr = &pkt_out;
+
+    compose_nd_ra(&pkt_out, sll, in_flow->dl_src, &in_flow->ipv6_dst,
+                  &in_flow->ipv6_src, IPV6_ND_RA_CUR_HOP_LIMIT, mo_flags,
+                  IPV6_ND_RA_LIFETIME, IPV6_ND_RA_REACHABLE_TIME,
+                  IPV6_ND_RA_RETRANSMIT_TIMER, mtu);
+
+    for (int i = 0; i < num_prefixes; i++) {
+        packet_put_ra_prefix_opt(
+            &pkt_out, prefixes[i].prefix_len, IPV6_ND_RA_OPT_PREFIX_FLAGS,
+            IPV6_ND_RA_OPT_PREFIX_VALID_LIFETIME,
+            IPV6_ND_RA_OPT_PREFIX_PREFERRED_LIFETIME, prefixes[i].prefix);
+    }
+    free(prefixes);
+
+    pin->packet = dp_packet_data(&pkt_out);
+    pin->packet_len = dp_packet_size(&pkt_out);
+    success = 1;
+exit:
+    if (!ofperr) {
+         union mf_subvalue sv;
+         sv.u8_val = success;
+         mf_write_subfield(&dst, &sv, &pin->flow_metadata);
+    }
+    queue_msg(ofputil_encode_resume(pin, continuation, proto));
+    dp_packet_uninit(pkt_out_ptr);
 }
