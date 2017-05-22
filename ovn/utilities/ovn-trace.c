@@ -35,8 +35,8 @@
 #include "ovn/expr.h"
 #include "ovn/lex.h"
 #include "ovn/lib/logical-fields.h"
+#include "ovn/lib/ovn-l7.h"
 #include "ovn/lib/ovn-sb-idl.h"
-#include "ovn/lib/ovn-dhcp.h"
 #include "ovn/lib/ovn-util.h"
 #include "ovsdb-idl.h"
 #include "poll-loop.h"
@@ -435,8 +435,8 @@ static struct shash symtab;
 static struct shash address_sets;
 
 /* DHCP options. */
-static struct hmap dhcp_opts;   /* Contains "struct dhcp_opts_map"s. */
-static struct hmap dhcpv6_opts; /* Contains "struct dhcp_opts_map"s. */
+static struct hmap dhcp_opts;   /* Contains "struct gen_opts_map"s. */
+static struct hmap dhcpv6_opts; /* Contains "struct gen_opts_map"s. */
 
 static struct ovntrace_datapath *
 ovntrace_datapath_find_by_sb_uuid(const struct uuid *sb_uuid)
@@ -1559,7 +1559,7 @@ execute_get_mac_bind(const struct ovnact_get_mac_bind *bind,
 }
 
 static void
-execute_put_dhcp_opts(const struct ovnact_put_dhcp_opts *pdo,
+execute_put_dhcp_opts(const struct ovnact_put_opts *pdo,
                       const char *name, struct flow *uflow,
                       struct ovs_list *super)
 {
@@ -1569,7 +1569,7 @@ execute_put_dhcp_opts(const struct ovnact_put_dhcp_opts *pdo,
 
     /* Format the put_dhcp_opts action. */
     struct ds s = DS_EMPTY_INITIALIZER;
-    for (const struct ovnact_dhcp_option *o = pdo->options;
+    for (const struct ovnact_gen_option *o = pdo->options;
          o < &pdo->options[pdo->n_options]; o++) {
         if (o != pdo->options) {
             ds_put_cstr(&s, ", ");
