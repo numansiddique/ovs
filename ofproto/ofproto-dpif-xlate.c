@@ -358,6 +358,7 @@ struct xlate_ctx {
     uint32_t dp_hash_alg;
     uint32_t dp_hash_basis;
     struct ofpbuf frozen_actions;
+    struct flow paused_flow;
     const struct ofpact_controller *pause;
 
     /* True if a packet was but is no longer MPLS (due to an MPLS pop action).
@@ -4341,7 +4342,7 @@ emit_continuation(struct xlate_ctx *ctx, const struct frozen_state *state)
             .max_len = UINT16_MAX,
         },
     };
-    flow_get_metadata(&ctx->xin->flow, &am->pin.up.public.flow_metadata);
+    flow_get_metadata(&ctx->paused_flow, &am->pin.up.public.flow_metadata);
 
     /* Async messages are only sent once, so if we send one now, no
      * xlate cache entry is created.  */
@@ -5614,6 +5615,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             if (controller->pause) {
                 ctx->pause = controller;
                 ctx->xout->slow |= SLOW_CONTROLLER;
+                ctx->paused_flow = ctx->xin->flow;
                 ctx_trigger_freeze(ctx);
                 a = ofpact_next(a);
             } else {
