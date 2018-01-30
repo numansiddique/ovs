@@ -152,6 +152,14 @@ expr_create_andor(enum expr_type type)
     return e;
 }
 
+struct expr *
+expr_create_conj(enum expr_type type)
+{
+    struct expr *e = xmalloc(sizeof *e);
+    e->type = type;
+    ovs_list_init(&e->conj);
+    return e;
+}
 /* Returns a logical AND or OR expression (according to 'type', which must be
  * EXPR_T_AND or EXPR_T_OR) whose sub-expressions are 'a' and 'b', with some
  * flexibility:
@@ -238,6 +246,7 @@ expr_not(struct expr *expr)
         expr->cond.not = !expr->cond.not;
         break;
 
+    case EXPR_T_CONJ:
     default:
         OVS_NOT_REACHED();
     }
@@ -298,6 +307,7 @@ expr_fix(struct expr *expr)
     case EXPR_T_CONDITION:
         return expr;
 
+    case EXPR_T_CONJ:
     default:
         OVS_NOT_REACHED();
     }
@@ -441,6 +451,9 @@ expr_format(const struct expr *e, struct ds *s)
 
     case EXPR_T_CONDITION:
         expr_format_condition(e, s);
+        break;
+
+    case EXPR_T_CONJ:
         break;
     }
 }
@@ -1452,6 +1465,9 @@ expr_get_level(const struct expr *expr)
     case EXPR_T_CONDITION:
         return EXPR_L_BOOLEAN;
 
+    case EXPR_T_CONJ:
+        return EXPR_T_CONJ;
+
     default:
         OVS_NOT_REACHED();
     }
@@ -1540,6 +1556,19 @@ expr_clone_condition(struct expr *expr)
     return new;
 }
 
+static struct expr *
+expr_clone_conj(struct expr *expr)
+{
+    struct expr *new = expr_create_conj(expr->type);
+    struct expr *sub;
+
+    LIST_FOR_EACH (sub, node, &expr->conj) {
+        struct expr *new_sub = expr_clone(sub);
+        ovs_list_push_back(&new->conj, &new_sub->node);
+    }
+    return new;
+}
+
 /* Returns a clone of 'expr'.  This is a "deep copy": neither the returned
  * expression nor any of its substructure will be shared with 'expr'. */
 struct expr *
@@ -1558,6 +1587,9 @@ expr_clone(struct expr *expr)
 
     case EXPR_T_CONDITION:
         return expr_clone_condition(expr);
+
+    case EXPR_T_CONJ:
+        return expr_clone_conj(expr);
     }
     OVS_NOT_REACHED();
 }
@@ -1592,6 +1624,13 @@ expr_destroy(struct expr *expr)
 
     case EXPR_T_CONDITION:
         free(expr->cond.string);
+        break;
+
+    case EXPR_T_CONJ:
+        LIST_FOR_EACH_SAFE (sub, next, node, &expr->conj) {
+            ovs_list_remove(&sub->node);
+            expr_destroy(sub);
+        }
         break;
     }
     free(expr);
@@ -1725,6 +1764,7 @@ expr_annotate__(struct expr *expr, const struct shash *symtab,
         *errorp = NULL;
         return expr;
 
+    case EXPR_T_CONJ:
     default:
         OVS_NOT_REACHED();
     }
@@ -1918,6 +1958,9 @@ expr_simplify(struct expr *expr,
 
     case EXPR_T_CONDITION:
         return expr_simplify_condition(expr, is_chassis_resident, c_aux);
+
+    case EXPR_T_CONJ:
+        OVS_NOT_REACHED();
     }
     OVS_NOT_REACHED();
 }
@@ -1946,6 +1989,7 @@ expr_is_cmp(const struct expr *expr)
 
     case EXPR_T_BOOLEAN:
     case EXPR_T_CONDITION:
+    case EXPR_T_CONJ:
         return NULL;
 
     default:
@@ -2043,6 +2087,7 @@ crush_and_string(struct expr *expr, const struct expr_symbol *symbol)
             free(new);
             break;
         case EXPR_T_CONDITION:
+        case EXPR_T_CONJ:
             OVS_NOT_REACHED();
         }
     }
@@ -2139,6 +2184,7 @@ crush_and_numeric(struct expr *expr, const struct expr_symbol *symbol)
             expr_destroy(new);
             break;
         case EXPR_T_CONDITION:
+        case EXPR_T_CONJ:
             OVS_NOT_REACHED();
         }
     }
@@ -2356,6 +2402,7 @@ crush_cmps(struct expr *expr, const struct expr_symbol *symbol)
      * called during expr_normalize, after expr_simplify which resolves
      * all conditions. */
     case EXPR_T_CONDITION:
+    case EXPR_T_CONJ:
     default:
         OVS_NOT_REACHED();
     }
@@ -2564,6 +2611,20 @@ expr_normalize(struct expr *expr)
     case EXPR_T_BOOLEAN:
         return expr;
 
+    case EXPR_T_CONJ: {
+        struct expr *sub, *next;
+        LIST_FOR_EACH_SAFE (sub, next, node, &expr->conj) {
+            ovs_list_remove(&sub->node);
+            struct expr *new_sub = expr_normalize(sub);
+            if (!new_sub) {
+                expr_destroy(expr);
+                return NULL;
+            }
+            ovs_list_insert(&next->node, &new_sub->node);
+        }
+        return expr;
+    }
+
     /* Should not hit expression type condition, since expr_normalize is
      * only called after expr_simplify, which resolves all conditions. */
     case EXPR_T_CONDITION:
@@ -2737,6 +2798,7 @@ add_conjunction(const struct expr *and,
         case EXPR_T_AND:
         case EXPR_T_BOOLEAN:
         case EXPR_T_CONDITION:
+        case EXPR_T_CONJ:
         default:
             OVS_NOT_REACHED();
         }
@@ -2870,6 +2932,34 @@ expr_to_matches(const struct expr *expr,
         }
         break;
 
+    case EXPR_T_CONJ: {
+        struct expr *sub;
+        n_conjs = 1;
+        size_t n_clauses = ovs_list_size(&expr->conj);
+        uint8_t clause = 0;
+        LIST_FOR_EACH (sub, node, &expr->conj) {
+            struct hmap conj_matches;
+            uint32_t sub_conjs = expr_to_matches(sub, lookup_port, aux,
+                                                 &conj_matches);
+            ovs_assert(sub_conjs == 0);
+            struct expr_match *m;
+
+            HMAP_FOR_EACH (m, hmap_node, &conj_matches) {
+                expr_match_add(matches, expr_match_new(&m->match, clause,
+                                                       n_clauses, n_conjs));
+            }
+            clause++;
+            expr_matches_destroy(&conj_matches);
+        }
+
+        /* Add the flow that matches on conj_id. */
+        struct match match;
+        match_init_catchall(&match);
+        match_set_conj_id(&match, n_conjs);
+        expr_match_add(matches, expr_match_new(&match, 0, 0, 0));
+        break;
+    }
+
     /* Should not hit expression type condition, since expr_to_matches is
      * only called after expr_simplify, which resolves all conditions. */
     case EXPR_T_CONDITION:
@@ -2954,6 +3044,7 @@ expr_honors_invariants(const struct expr *expr)
     case EXPR_T_CONDITION:
         return true;
 
+    case EXPR_T_CONJ:
     default:
         OVS_NOT_REACHED();
     }
@@ -3002,6 +3093,17 @@ expr_is_normalized(const struct expr *expr)
 
     case EXPR_T_CONDITION:
         return false;
+
+    case EXPR_T_CONJ: {
+        const struct expr *sub;
+
+        LIST_FOR_EACH (sub, node, &expr->conj) {
+            if (!expr_is_normalized(sub)) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     default:
         OVS_NOT_REACHED();
@@ -3100,6 +3202,7 @@ expr_evaluate(const struct expr *e, const struct flow *uflow,
          * is_chassis_resident evaluates as true. */
         return (e->cond.not ? false : true);
 
+    case EXPR_T_CONJ:
     default:
         OVS_NOT_REACHED();
     }
@@ -3221,6 +3324,7 @@ expr_parse_microflow__(struct lexer *lexer,
     /* Should not hit expression type condition, since
      * expr_simplify was called above. */
     case EXPR_T_CONDITION:
+    case EXPR_T_CONJ:
     default:
         OVS_NOT_REACHED();
     }
@@ -3285,4 +3389,144 @@ expr_parse_microflow(const char *s, const struct shash *symtab,
         memset(uflow, 0, sizeof *uflow);
     }
     return error;
+}
+
+static void
+display_expr_relop(enum expr_relop relop)
+{
+    switch(relop) {
+        case EXPR_R_EQ:
+            VLOG_INFO("\t\tEXPR_R_EQ\n");
+            break;
+        case EXPR_R_NE:
+            VLOG_INFO("\t\tEXPR_R_EQ\n");
+            break;
+        case EXPR_R_LT:
+            VLOG_INFO("\t\tEXPR_R_LT\n");
+            break;
+        case EXPR_R_LE:
+            VLOG_INFO("\t\tEXPR_R_LE\n");
+            break;
+        case EXPR_R_GT:
+            VLOG_INFO("\t\tEXPR_R_GT\n");
+            break;
+        case EXPR_R_GE:
+            VLOG_INFO("\t\tEXPR_R_GE\n");
+            break;
+    }
+}
+void
+display_expr(struct expr *expr)
+{
+    VLOG_INFO("display_expr entered DUDE\n");
+    if (!expr) {
+        return;
+    }
+
+    struct expr *sub, *next;
+
+    switch (expr->type) {
+    case EXPR_T_CMP:
+        {
+        VLOG_INFO("EXPR_T_CMP : symbol = [%s] : parent size = [%lu]\n", expr->cmp.symbol->name, ovs_list_size(&expr->node));
+        display_expr_relop(expr->cmp.relop);
+        if (expr->cmp.string) {
+            VLOG_INFO("\t : [%s]\n", expr->cmp.string);
+        } else {
+            VLOG_INFO("\t : u8_val : [%x]", ntohl(expr->cmp.value.be32_int));
+        }
+#if 0
+        struct expr *s, *n;
+        LIST_FOR_EACH_SAFE (s, n, node, &expr->node) {
+            printf("Expression type of parent = [%u] : symbol = [%s]\n", s->type, s->cmp.symbol ? s->cmp.symbol->name : "NULL");
+            if (s->cmp.string) {
+                printf("\t : CRAP : PARENT : [%s]\n", s->cmp.string);
+            }
+        }
+#endif
+        }
+        break;
+
+    case EXPR_T_AND:
+        VLOG_INFO("EXPR_T_AND\n");
+        LIST_FOR_EACH_SAFE (sub, next, node, &expr->andor) {
+            display_expr(sub);
+        }
+        VLOG_INFO("EXPR_T_AND DONE DUDE\n");
+        break;
+    case EXPR_T_OR:
+        VLOG_INFO("EXPR_T_OR\n");
+        LIST_FOR_EACH_SAFE (sub, next, node, &expr->andor) {
+            display_expr(sub);
+        }
+        VLOG_INFO("EXPR_T_OR DONE DUDE\n");
+        break;
+
+    case EXPR_T_BOOLEAN:
+        VLOG_INFO("EXPR_T_BOOLEAN\n");
+        break;
+
+    case EXPR_T_CONDITION:
+        VLOG_INFO("EXPR_T_CONDITION\n");
+        break;
+    case EXPR_T_CONJ:
+        VLOG_INFO("EXPR_T_CONJ\n");
+        LIST_FOR_EACH_SAFE (sub, next, node, &expr->conj) {
+            display_expr(sub);
+        }
+        VLOG_INFO("EXPR_T_CONJ DONE DUDE\n");
+        break;
+    }
+}
+
+
+struct expr *
+expr_eval_conj(struct expr *expr)
+{
+    if (expr->type != EXPR_T_AND) {
+        return expr;
+    }
+
+    expr = expr_sort(expr);
+
+    if (expr->type != EXPR_T_AND) {
+        return expr;
+    }
+
+    struct expr *sub;
+    uint8_t n_ors = 0;
+    LIST_FOR_EACH (sub, node, &expr->andor) {
+        if (sub->type == EXPR_T_OR && ovs_list_size(&sub->andor) > 2) {
+            n_ors++;
+        }
+    }
+
+    if (n_ors < 2) {
+        return expr;
+    }
+
+    struct expr *conj_expr = expr_create_conj(EXPR_T_CONJ);
+    struct expr **conj_clause = xmalloc(n_ors * sizeof *conj_clause);;
+    for (uint8_t i = 0; i < n_ors; i++) {
+        conj_clause[i] = expr_create_andor(EXPR_T_AND);
+        ovs_list_push_back(&conj_expr->conj, &conj_clause[i]->node);
+    }
+
+    uint8_t j = 0;
+    LIST_FOR_EACH (sub, node, &expr->andor) {
+        if (sub->type == EXPR_T_OR && ovs_list_size(&sub->andor) > 2) {
+            struct expr *e = expr_clone(sub);
+            ovs_list_push_back(&conj_clause[j]->andor, &e->node);
+            j++;
+        } else {
+            for (uint8_t i = 0; i < n_ors; i++) {
+                struct expr *e = expr_clone(sub);
+                ovs_list_push_back(&conj_clause[i]->andor, &e->node);
+            }
+        }
+    }
+
+    expr_destroy(expr);
+    free(conj_clause);
+    return conj_expr;
 }

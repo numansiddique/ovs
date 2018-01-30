@@ -289,6 +289,7 @@ consider_logical_flow(struct controller_ctx *ctx,
             expr = expr_combine(EXPR_T_AND, expr, prereqs);
             prereqs = NULL;
         }
+
         expr = expr_annotate(expr, &symtab, &error);
     }
     if (error) {
@@ -304,6 +305,7 @@ consider_logical_flow(struct controller_ctx *ctx,
     struct condition_aux cond_aux = { ctx->ovnsb_idl, chassis, active_tunnels,
                                       chassis_index};
     expr = expr_simplify(expr, is_chassis_resident_cb, &cond_aux);
+    expr = expr_eval_conj(expr);
     expr = expr_normalize(expr);
     uint32_t n_conjs = expr_to_matches(expr, lookup_port_cb, &aux,
                                        &matches);

@@ -40,6 +40,9 @@
 #include "simap.h"
 #include "util.h"
 
+#include "openvswitch/vlog.h"
+VLOG_DEFINE_THIS_MODULE(testovn);
+
 /* --relops: Bitmap of the relational operators to test, in exhaustive test. */
 static unsigned int test_relops;
 
@@ -270,6 +273,7 @@ test_parse_expr__(int steps)
                 expr = expr_simplify(expr, is_chassis_resident_cb, &ports);
             }
             if (steps > 2) {
+                expr = expr_eval_conj(expr);
                 expr = expr_normalize(expr);
                 ovs_assert(expr_is_normalized(expr));
             }
@@ -294,7 +298,6 @@ test_parse_expr__(int steps)
         expr_destroy(expr);
     }
     ds_destroy(&input);
-
     simap_destroy(&ports);
     expr_symtab_destroy(&symtab);
     shash_destroy(&symtab);

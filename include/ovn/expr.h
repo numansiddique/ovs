@@ -295,6 +295,7 @@ enum expr_type {
     EXPR_T_CONDITION,           /* Conditional to be evaluated in the
                                  * controller during expr_simplify(),
                                  * prior to constructing OpenFlow matches. */
+    EXPR_T_CONJ,
 };
 
 /* Expression condition type. */
@@ -366,12 +367,16 @@ struct expr {
             /* XXX Should arguments for conditions be generic? */
             char *string;
         } cond;
+
+        /* EXPR_T_CONJ. */
+        struct ovs_list conj;
     };
 };
 
 struct expr *expr_create_boolean(bool b);
 struct expr *expr_create_andor(enum expr_type);
 struct expr *expr_combine(enum expr_type, struct expr *a, struct expr *b);
+struct expr *expr_create_conj(enum expr_type);
 
 static inline struct expr *
 expr_from_node(const struct ovs_list *node)
@@ -500,5 +505,6 @@ void expr_addr_sets_add(struct shash *addr_sets, const char *name,
                         const char * const *values, size_t n_values);
 void expr_addr_sets_remove(struct shash *addr_sets, const char *name);
 void expr_addr_sets_destroy(struct shash *addr_sets);
-
+struct expr *expr_eval_conj(struct expr *expr);
+void display_expr(struct expr *expr);
 #endif /* ovn/expr.h */
