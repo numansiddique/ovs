@@ -2677,6 +2677,15 @@ lsp_is_up(const struct nbrec_logical_switch_port *lsp)
 }
 
 static bool
+lsp_is_external(const struct nbrec_logical_switch_port *lsp)
+{
+    if (lsp->type && lsp->type[0] && !strcmp(lsp->type, "external")) {
+        return true;
+    }
+    return false;
+}
+
+static bool
 build_dhcpv4_action(struct ovn_port *op, ovs_be32 offer_ip,
                     struct ds *options_action, struct ds *response_action,
                     struct ds *ipv4_addr_match)
@@ -3826,7 +3835,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
             continue;
         }
 
-        if (!lsp_is_enabled(op->nbsp)) {
+        if (!lsp_is_enabled(op->nbsp) || lsp_is_external(op->nbsp)) {
             /* Drop packets from disabled logical ports (since logical flow
              * tables are default-drop). */
             continue;
@@ -3894,7 +3903,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
          *  - port type is localport
          */
         if (!lsp_is_up(op->nbsp) && strcmp(op->nbsp->type, "router") &&
-            strcmp(op->nbsp->type, "localport")) {
+            strcmp(op->nbsp->type, "localport") && lsp_is_external(op->nbsp)) {
             continue;
         }
 
@@ -4142,7 +4151,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
             continue;
         }
 
-        if (lsp_is_enabled(op->nbsp)) {
+        if (lsp_is_enabled(op->nbsp) && !lsp_is_external(op->nbsp)) {
             ovn_multicast_add(mcgroups, &mc_flood, op);
         }
     }
@@ -4157,7 +4166,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
 
     /* Ingress table 16: Destination lookup, unicast handling (priority 50), */
     HMAP_FOR_EACH (op, key_node, ports) {
-        if (!op->nbsp) {
+        if (!op->nbsp || lsp_is_external(op->nbsp)) {
             continue;
         }
 
@@ -4291,6 +4300,10 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
      * don't even receive multicast or broadcast packets. */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbsp) {
+            continue;
+        }
+
+        if (lsp_is_external(op->nbsp)) {
             continue;
         }
 

@@ -604,6 +604,9 @@ main(int argc, char *argv[])
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath
         = ovsdb_idl_index_create1(ovnsb_idl_loop.idl,
                                   &sbrec_port_binding_col_datapath);
+    struct ovsdb_idl_index *sbrec_port_binding_by_type
+        = ovsdb_idl_index_create1(ovnsb_idl_loop.idl,
+                                  &sbrec_port_binding_col_type);
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key
         = ovsdb_idl_index_create1(ovnsb_idl_loop.idl,
                                   &sbrec_datapath_binding_col_tunnel_key);
@@ -732,6 +735,8 @@ main(int argc, char *argv[])
                     lflow_run(sbrec_chassis_by_name,
                               sbrec_multicast_group_by_name_datapath,
                               sbrec_port_binding_by_name,
+                              sbrec_port_binding_by_type,
+                              sbrec_datapath_binding_by_key,
                               sbrec_dhcp_options_table_get(ovnsb_idl_loop.idl),
                               sbrec_dhcpv6_options_table_get(ovnsb_idl_loop.idl),
                               sbrec_logical_flow_table_get(ovnsb_idl_loop.idl),

@@ -471,13 +471,24 @@ consider_local_datapath(struct ovsdb_idl_txn *ovnsb_idl_txn,
          * for them. */
         sset_add(local_lports, binding_rec->logical_port);
         our_chassis = false;
+    } else if (!strcmp(binding_rec->type, "external")) {
+        const char *chassis_id = smap_get(&binding_rec->options,
+                                          "requested-chassis");
+        our_chassis = chassis_id && !strcmp(chassis_id, chassis_rec->name);
+        if (our_chassis) {
+            add_local_datapath(sbrec_datapath_binding_by_key,
+                               sbrec_port_binding_by_datapath,
+                               sbrec_port_binding_by_name,
+                               binding_rec->datapath, true, local_datapaths);
+        }
     }
 
     if (our_chassis
         || !strcmp(binding_rec->type, "patch")
         || !strcmp(binding_rec->type, "localport")
         || !strcmp(binding_rec->type, "vtep")
-        || !strcmp(binding_rec->type, "localnet")) {
+        || !strcmp(binding_rec->type, "localnet")
+        || !strcmp(binding_rec->type, "external")) {
         update_local_lport_ids(local_lport_ids, binding_rec);
     }
 
