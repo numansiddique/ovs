@@ -573,11 +573,18 @@ create_ovnsb_indexes(struct ovsdb_idl *ovnsb_idl)
                                OVSDB_INDEX_ASC, NULL);
 }
 
+struct ovn_controller_exit_args {
+    bool *exiting;
+    bool *restart;
+};
+
 int
 main(int argc, char *argv[])
 {
     struct unixctl_server *unixctl;
     bool exiting;
+    bool restart;
+    struct ovn_controller_exit_args exit_args = {&exiting, &restart};
     int retval;
 
     ovs_cmdl_proctitle_init(argc, argv);
@@ -592,7 +599,8 @@ main(int argc, char *argv[])
     if (retval) {
         exit(EXIT_FAILURE);
     }
-    unixctl_command_register("exit", "", 0, 0, ovn_controller_exit, &exiting);
+    unixctl_command_register("exit", "", 0, 1, ovn_controller_exit,
+                             &exit_args);
 
     /* Initialize group ids for loadbalancing. */
     struct ovn_extend_table group_table;
@@ -645,6 +653,7 @@ main(int argc, char *argv[])
 
     /* Main loop. */
     exiting = false;
+    restart = false;
     while (!exiting) {
         /* Check OVN SB database. */
         char *new_ovnsb_remote = get_ovnsb_remote(ovs_idl_loop.idl);
@@ -814,33 +823,35 @@ main(int argc, char *argv[])
         }
     }
 
-    /* It's time to exit.  Clean up the databases. */
-    bool done = false;
-    while (!done) {
-        struct controller_ctx ctx = {
-            .ovs_idl = ovs_idl_loop.idl,
-            .ovs_idl_txn = ovsdb_idl_loop_run(&ovs_idl_loop),
-            .ovnsb_idl = ovnsb_idl_loop.idl,
-            .ovnsb_idl_txn = ovsdb_idl_loop_run(&ovnsb_idl_loop),
-        };
+    /* It's time to exit.  Clean up the databases if we are not restarting */
+    if (!restart) {
+        bool done = false;
+        while (!done) {
+            struct controller_ctx ctx = {
+                .ovs_idl = ovs_idl_loop.idl,
+                .ovs_idl_txn = ovsdb_idl_loop_run(&ovs_idl_loop),
+                .ovnsb_idl = ovnsb_idl_loop.idl,
+                .ovnsb_idl_txn = ovsdb_idl_loop_run(&ovnsb_idl_loop),
+            };
 
-        const struct ovsrec_bridge *br_int = get_br_int(&ctx);
-        const char *chassis_id = get_chassis_id(ctx.ovs_idl);
-        const struct sbrec_chassis *chassis
-            = chassis_id ? get_chassis(ctx.ovnsb_idl, chassis_id) : NULL;
+            const struct ovsrec_bridge *br_int = get_br_int(&ctx);
+            const char *chassis_id = get_chassis_id(ctx.ovs_idl);
+            const struct sbrec_chassis *chassis
+                = chassis_id ? get_chassis(ctx.ovnsb_idl, chassis_id) : NULL;
 
-        /* Run all of the cleanup functions, even if one of them returns false.
-         * We're done if all of them return true. */
-        done = binding_cleanup(&ctx, chassis);
-        done = chassis_cleanup(&ctx, chassis) && done;
-        done = encaps_cleanup(&ctx, br_int) && done;
-        if (done) {
-            poll_immediate_wake();
+            /* Run all of the cleanup functions, even if one of them returns false.
+             * We're done if all of them return true. */
+            done = binding_cleanup(&ctx, chassis);
+            done = chassis_cleanup(&ctx, chassis) && done;
+            done = encaps_cleanup(&ctx, br_int) && done;
+            if (done) {
+                poll_immediate_wake();
+            }
+
+            ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
+            ovsdb_idl_loop_commit_and_wait(&ovs_idl_loop);
+            poll_block();
         }
-
-        ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
-        ovsdb_idl_loop_commit_and_wait(&ovs_idl_loop);
-        poll_block();
     }
 
     unixctl_server_destroy(unixctl);
@@ -954,12 +965,12 @@ usage(void)
 }
 
 static void
-ovn_controller_exit(struct unixctl_conn *conn, int argc OVS_UNUSED,
-             const char *argv[] OVS_UNUSED, void *exiting_)
+ovn_controller_exit(struct unixctl_conn *conn, int argc,
+             const char *argv[], void *exit_args_)
 {
-    bool *exiting = exiting_;
-    *exiting = true;
-
+    struct ovn_controller_exit_args *exit_args = exit_args_;
+    *exit_args->exiting = true;
+    *exit_args->restart = argc == 2 && !strcmp(argv[1], "--restart");
     unixctl_command_reply(conn, NULL);
 }
 
