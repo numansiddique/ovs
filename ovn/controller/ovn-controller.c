@@ -63,6 +63,7 @@ VLOG_DEFINE_THIS_MODULE(main);
 static unixctl_cb_func ovn_controller_exit;
 static unixctl_cb_func ct_zone_list;
 static unixctl_cb_func inject_pkt;
+static unixctl_cb_func ovn_controller_conn_show;
 
 #define DEFAULT_BRIDGE_NAME "br-int"
 #define DEFAULT_PROBE_INTERVAL_MSEC 5000
@@ -618,6 +619,9 @@ main(int argc, char *argv[])
     struct ovsdb_idl_loop ovnsb_idl_loop = OVSDB_IDL_LOOP_INITIALIZER(
         ovsdb_idl_create(ovnsb_remote, &sbrec_idl_class, true, true));
 
+    unixctl_command_register("connection-status", "", 0, 0,
+                             ovn_controller_conn_show, ovnsb_idl_loop.idl);
+
     create_ovnsb_indexes(ovnsb_idl_loop.idl);
     lport_init(ovnsb_idl_loop.idl);
 
@@ -1009,4 +1013,17 @@ update_probe_interval(struct controller_ctx *ctx, const char *ovnsb_remote)
     }
 
     ovsdb_idl_set_probe_interval(ctx->ovnsb_idl, interval);
+}
+
+static void
+ovn_controller_conn_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                         const char *argv[] OVS_UNUSED, void *idl_)
+{
+    const char *result = "not connected";
+    const struct ovsdb_idl *idl = idl_;
+
+    if (ovsdb_idl_is_connected(idl)) {
+       result = "connected";
+    }
+    unixctl_command_reply(conn, result);
 }
