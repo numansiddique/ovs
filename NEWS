@@ -52,6 +52,8 @@ v2.9.0 - 19 Feb 2018
        pmd assignments.
      * Add rxq utilization of pmd to appctl 'dpif-netdev/pmd-rxq-show'.
      * Add support for vHost dequeue zero copy (experimental)
+     * Add signature match cache (SMC) as experimental feature. When turned on,
+       it improves throughput when traffic has many more flows than EMC size.
    - Userspace datapath:
      * Output packet batching support.
    - vswitchd:
