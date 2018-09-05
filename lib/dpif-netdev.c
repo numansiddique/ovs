@@ -2018,6 +2018,23 @@ flow_mark_flush(struct dp_netdev_pmd_thread *pmd)
     }
 }
 
+static struct dp_netdev_flow *
+mark_to_flow_find(const struct dp_netdev_pmd_thread *pmd,
+                  const uint32_t mark)
+{
+    struct dp_netdev_flow *flow;
+
+    CMAP_FOR_EACH_WITH_HASH (flow, mark_node, hash_int(mark, 0),
+                             &flow_mark.mark_to_flow) {
+        if (flow->mark == mark && flow->pmd_id == pmd->core_id &&
+            flow->dead == false) {
+            return flow;
+        }
+    }
+
+    return NULL;
+}
+
 static void
 dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
                           struct dp_netdev_flow *flow)
@@ -5255,10 +5272,10 @@ struct packet_batch_per_flow {
 static inline void
 packet_batch_per_flow_update(struct packet_batch_per_flow *batch,
                              struct dp_packet *packet,
-                             const struct miniflow *mf)
+                             uint16_t tcp_flags)
 {
     batch->byte_count += dp_packet_size(packet);
-    batch->tcp_flags |= miniflow_get_tcp_flags(mf);
+    batch->tcp_flags |= tcp_flags;
     batch->array.packets[batch->array.count++] = packet;
 }
 
@@ -5292,7 +5309,7 @@ packet_batch_per_flow_execute(struct packet_batch_per_flow *batch,
 
 static inline void
 dp_netdev_queue_batches(struct dp_packet *pkt,
-                        struct dp_netdev_flow *flow, const struct miniflow *mf,
+                        struct dp_netdev_flow *flow, uint16_t tcp_flags,
                         struct packet_batch_per_flow *batches,
                         size_t *n_batches)
 {
@@ -5303,7 +5320,7 @@ dp_netdev_queue_batches(struct dp_packet *pkt,
         packet_batch_per_flow_init(batch, flow);
     }
 
-    packet_batch_per_flow_update(batch, pkt, mf);
+    packet_batch_per_flow_update(batch, pkt, tcp_flags);
 }
 
 /* Try to process all ('cnt') the 'packets' using only the exact match cache
@@ -5334,6 +5351,7 @@ emc_processing(struct dp_netdev_pmd_thread *pmd,
     const size_t cnt = dp_packet_batch_size(packets_);
     uint32_t cur_min;
     int i;
+    uint16_t tcp_flags;
 
     atomic_read_relaxed(&pmd->dp->emc_insert_min, &cur_min);
     pmd_perf_update_counter(&pmd->perf_stats,
@@ -5342,6 +5360,7 @@ emc_processing(struct dp_netdev_pmd_thread *pmd,
 
     DP_PACKET_BATCH_REFILL_FOR_EACH (i, cnt, packet, packets_) {
         struct dp_netdev_flow *flow;
+        uint32_t mark;
 
         if (OVS_UNLIKELY(dp_packet_size(packet) < ETH_HEADER_LEN)) {
             dp_packet_delete(packet);
@@ -5359,6 +5378,18 @@ emc_processing(struct dp_netdev_pmd_thread *pmd,
         if (!md_is_valid) {
             pkt_metadata_init(&packet->md, port_no);
         }
+
+        if ((*recirc_depth_get() == 0) &&
+            dp_packet_has_flow_mark(packet, &mark)) {
+            flow = mark_to_flow_find(pmd, mark);
+            if (flow) {
+                tcp_flags = parse_tcp_flags(packet);
+                dp_netdev_queue_batches(packet, flow, tcp_flags, batches,
+                                        n_batches);
+                continue;
+            }
+        }
+
         miniflow_extract(packet, &key->mf);
         key->len = 0; /* Not computed yet. */
         /* If EMC is disabled skip hash computation and emc_lookup */
@@ -5374,7 +5405,8 @@ emc_processing(struct dp_netdev_pmd_thread *pmd,
             flow = NULL;
         }
         if (OVS_LIKELY(flow)) {
-            dp_netdev_queue_batches(packet, flow, &key->mf, batches,
+            tcp_flags = miniflow_get_tcp_flags(&key->mf);
+            dp_netdev_queue_batches(packet, flow, tcp_flags, batches,
                                     n_batches);
         } else {
             /* Exact match cache missed. Group missed packets together at
@@ -5553,7 +5585,9 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
         flow = dp_netdev_flow_cast(rules[i]);
 
         emc_probabilistic_insert(pmd, &keys[i], flow);
-        dp_netdev_queue_batches(packet, flow, &keys[i].mf, batches, n_batches);
+        dp_netdev_queue_batches(packet, flow,
+                                miniflow_get_tcp_flags(&keys[i].mf),
+                                batches, n_batches);
     }
 
     pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_MASKED_HIT,
