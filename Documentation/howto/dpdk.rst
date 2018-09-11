@@ -130,14 +130,18 @@ After that PMD threads on cores where RX queues was pinned will become
   ``core_id`` not in ``pmd-cpu-mask``), RX queue will not be polled by any PMD
   thread.
 
-If pmd-rxq-affinity is not set for rxqs, they will be assigned to pmds (cores)
-automatically. The processing cycles that have been stored for each rxq
-will be used where known to assign rxqs to pmd based on a round robin of the
-sorted rxqs.
+If ``pmd-rxq-affinity`` is not set for Rx queues, they will be assigned to PMDs
+(cores) automatically.
 
-For example, in the case where here there are 5 rxqs and 3 cores (e.g. 3,7,8)
-available, and the measured usage of core cycles per rxq over the last
-interval is seen to be:
+The algorithm used to automatically assign Rxqs to PMDs can be set by::
+
+    $ ovs-vsctl set Open_vSwitch . other_config:pmd-rxq-assign=<assignment>
+
+By default, ``cycles`` assignment is used where the Rxqs will be ordered by
+their measured processing cycles, and then be evenly assigned in descending
+order to PMDs based on an up/down walk of the PMDs. For example, where there
+are five Rx queues and three cores - 3, 7, and 8 - available and the measured
+usage of core cycles per Rx queue over the last interval is seen to be:
 
 - Queue #0: 30%
 - Queue #1: 80%
@@ -145,11 +149,27 @@ interval is seen to be:
 - Queue #4: 70%
 - Queue #5: 10%
 
-The rxqs will be assigned to cores 3,7,8 in the following order:
+The Rx queues will be assigned to the cores in the following order::
 
-Core 3: Q1 (80%) |
-Core 7: Q4 (70%) | Q5 (10%)
-core 8: Q3 (60%) | Q0 (30%)
+    Core 3: Q1 (80%) |
+    Core 7: Q4 (70%) | Q5 (10%)
+    Core 8: Q3 (60%) | Q0 (30%)
+
+Alternatively, ``roundrobin`` assignment can be used, where the Rxqs are
+assigned to PMDs in a round-robined fashion. This algorithm was used by
+default prior to OVS 2.9. For example, given the following ports and queues:
+
+- Port #0 Queue #0 (P0Q0)
+- Port #0 Queue #1 (P0Q1)
+- Port #1 Queue #0 (P1Q0)
+- Port #1 Queue #1 (P1Q1)
+- Port #1 Queue #2 (P1Q2)
+
+The Rx queues may be assigned to the cores in the following order::
+
+    Core 3: P0Q0 | P1Q1
+    Core 7: P0Q1 | P1Q2
+    Core 8: P1Q0 |
 
 To see the current measured usage history of pmd core cycles for each rxq::
 
