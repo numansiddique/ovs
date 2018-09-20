@@ -45,6 +45,7 @@
 #include "stream.h"
 #include "unixctl.h"
 #include "util.h"
+#include "random.h"
 
 VLOG_DEFINE_THIS_MODULE(ovntrace);
 
@@ -75,6 +76,9 @@ static struct vconn *vconn;
 static uint32_t *ct_states;
 static size_t n_ct_states;
 static size_t ct_state_idx;
+
+/* --lb-dst: load balancer destination info. */
+static struct ovnact_ct_lb_dst lb_dst;
 
 /* --friendly-names, --no-friendly-names: Whether to substitute human-friendly
  * port and datapath names for the awkward UUIDs typically used in the actual
@@ -186,6 +190,33 @@ parse_ct_option(const char *state_s_)
 }
 
 static void
+parse_lb_option(const char *s)
+{
+    struct sockaddr_storage ss;
+    struct sockaddr_in6 *sin6;
+    struct sockaddr_in *sin;
+    struct sockaddr *sa;
+
+    if (!inet_parse_active(s, 0, &ss)) {
+        ovs_fatal(0, "%s: bad address", s);
+    }
+
+    sa = (struct sockaddr *)ALIGNED_CAST(const struct sockaddr *, &ss);
+    ovs_assert(sa->sa_family == AF_INET || sa->sa_family == AF_INET6);
+
+    lb_dst.family = ss.ss_family;
+    if (ss.ss_family == AF_INET) {
+        sin = (struct sockaddr_in *)ALIGNED_CAST(struct sockaddr_in *, sa);
+        struct in6_addr a = in6_addr_mapped_ipv4(sin->sin_addr.s_addr);
+        lb_dst.ipv4 = in6_addr_get_mapped_ipv4(&a);
+    } else {
+        sin6 = (struct sockaddr_in6 *)ALIGNED_CAST(struct sockaddr_in6 *, sa);
+        lb_dst.ipv6 = sin6->sin6_addr;
+    }
+    lb_dst.port = ss_get_port(&ss);
+}
+
+static void
 parse_options(int argc, char *argv[])
 {
     enum {
@@ -201,7 +232,8 @@ parse_options(int argc, char *argv[])
         OPT_NO_FRIENDLY_NAMES,
         DAEMON_OPTION_ENUMS,
         SSL_OPTION_ENUMS,
-        VLOG_OPTION_ENUMS
+        VLOG_OPTION_ENUMS,
+        OPT_LB_DST
     };
     static const struct option long_options[] = {
         {"db", required_argument, NULL, OPT_DB},
@@ -216,6 +248,7 @@ parse_options(int argc, char *argv[])
         {"no-friendly-names", no_argument, NULL, OPT_NO_FRIENDLY_NAMES},
         {"help", no_argument, NULL, 'h'},
         {"version", no_argument, NULL, 'V'},
+        {"lb-dst", required_argument, NULL, OPT_LB_DST},
         DAEMON_LONG_OPTIONS,
         VLOG_LONG_OPTIONS,
         STREAM_SSL_LONG_OPTIONS,
@@ -271,6 +304,10 @@ parse_options(int argc, char *argv[])
 
         case OPT_NO_FRIENDLY_NAMES:
             use_friendly_names = false;
+            break;
+
+        case OPT_LB_DST:
+            parse_lb_option(optarg);
             break;
 
         case 'h':
@@ -1726,6 +1763,71 @@ execute_ct_nat(const struct ovnact_ct_nat *ct_nat,
 }
 
 static void
+execute_ct_lb(const struct ovnact_ct_lb *ct_lb,
+              const struct ovntrace_datapath *dp, struct flow *uflow,
+              enum ovnact_pipeline pipeline, struct ovs_list *super)
+{
+    struct flow ct_lb_flow = *uflow;
+
+    int family = (ct_lb_flow.dl_type == htons(ETH_TYPE_IP) ? AF_INET
+                  : ct_lb_flow.dl_type == htons(ETH_TYPE_IPV6) ? AF_INET6
+                  : AF_UNSPEC);
+    if (family != AF_UNSPEC) {
+        const struct ovnact_ct_lb_dst *dst = NULL;
+        if (ct_lb->n_dsts) {
+            /* For ct_lb with addresses, choose one of the addresses. */
+            int n = 0;
+            for (int i = 0; i < ct_lb->n_dsts; i++) {
+                const struct ovnact_ct_lb_dst *d = &ct_lb->dsts[i];
+                if (d->family != family) {
+                    continue;
+                }
+
+                /* Check for the destination specified by --lb-dst, if any. */
+                if (lb_dst.family == family
+                    && (family == AF_INET
+                        ? d->ipv4 == lb_dst.ipv4
+                        : ipv6_addr_equals(&d->ipv6, &lb_dst.ipv6))) {
+                    lb_dst.family = AF_UNSPEC;
+                    dst = d;
+                    break;
+                }
+
+                /* Select a random destination as a fallback. */
+                if (!random_range(++n)) {
+                    dst = d;
+                }
+            }
+
+            if (!dst) {
+                ovntrace_node_append(super, OVNTRACE_NODE_ERROR,
+                                     "*** no load balancing destination "
+                                     "(use --lb-dst)");
+            }
+        } else if (lb_dst.family == family) {
+            /* For ct_lb without addresses, use user-specified address. */
+            dst = &lb_dst;
+        }
+
+        if (dst) {
+            if (family == AF_INET6) {
+                ct_lb_flow.ipv6_dst = dst->ipv6;
+            } else {
+                ct_lb_flow.nw_dst = dst->ipv4;
+            }
+            if (dst->port) {
+                ct_lb_flow.tp_dst = htons(dst->port);
+            }
+            ct_lb_flow.ct_state |= CS_DST_NAT;
+        }
+    }
+
+    struct ovntrace_node *node = ovntrace_node_append(
+        super, OVNTRACE_NODE_TRANSFORMATION, "ct_lb");
+    trace__(dp, &ct_lb_flow, ct_lb->ltable, pipeline, &node->subs);
+}
+
+static void
 execute_log(const struct ovnact_log *log, struct flow *uflow,
             struct ovs_list *super)
 {
@@ -1813,8 +1915,7 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
             break;
 
         case OVNACT_CT_LB:
-            ovntrace_node_append(super, OVNTRACE_NODE_ERROR,
-                                 "*** ct_lb action not implemented");
+            execute_ct_lb(ovnact_get_CT_LB(a), dp, uflow, pipeline, super);
             break;
 
         case OVNACT_CT_CLEAR:
