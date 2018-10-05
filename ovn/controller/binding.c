@@ -471,6 +471,18 @@ consider_local_datapath(struct ovsdb_idl_txn *ovnsb_idl_txn,
          * for them. */
         sset_add(local_lports, binding_rec->logical_port);
         our_chassis = false;
+    } else if (!strcmp(binding_rec->type, "external")) {
+        const char *chassis_id = smap_get(&binding_rec->options,
+                                          "requested-chassis");
+        our_chassis = chassis_id && (
+            !strcmp(chassis_id, chassis_rec->name) ||
+            !strcmp(chassis_id, chassis_rec->hostname));
+        if (our_chassis) {
+            add_local_datapath(sbrec_datapath_binding_by_key,
+                               sbrec_port_binding_by_datapath,
+                               sbrec_port_binding_by_name,
+                               binding_rec->datapath, true, local_datapaths);
+        }
     }
 
     if (our_chassis

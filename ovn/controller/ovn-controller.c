@@ -145,6 +145,7 @@ update_sb_monitors(struct ovsdb_idl *ovnsb_idl,
      * ports that have a Gateway_Chassis that point's to our own
      * chassis */
     sbrec_port_binding_add_clause_type(&pb, OVSDB_F_EQ, "chassisredirect");
+    sbrec_port_binding_add_clause_type(&pb, OVSDB_F_EQ, "external");
     if (chassis) {
         /* This should be mostly redundant with the other clauses for port
          * bindings, but it allows us to catch any ports that are assigned to
@@ -616,6 +617,10 @@ main(int argc, char *argv[])
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath
         = ovsdb_idl_index_create1(ovnsb_idl_loop.idl,
                                   &sbrec_port_binding_col_datapath);
+    struct ovsdb_idl_index *sbrec_port_binding_by_type
+        = ovsdb_idl_index_create2(ovnsb_idl_loop.idl,
+                                  &sbrec_port_binding_col_type,
+                                  &sbrec_port_binding_col_datapath);
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key
         = ovsdb_idl_index_create1(ovnsb_idl_loop.idl,
                                   &sbrec_datapath_binding_col_tunnel_key);
@@ -743,6 +748,8 @@ main(int argc, char *argv[])
                             sbrec_chassis_by_name,
                             sbrec_multicast_group_by_name_datapath,
                             sbrec_port_binding_by_name,
+                            sbrec_port_binding_by_type,
+                            sbrec_datapath_binding_by_key,
                             sbrec_dhcp_options_table_get(ovnsb_idl_loop.idl),
                             sbrec_dhcpv6_options_table_get(ovnsb_idl_loop.idl),
                             sbrec_logical_flow_table_get(ovnsb_idl_loop.idl),

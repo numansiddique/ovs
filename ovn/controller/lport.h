@@ -42,6 +42,11 @@ const struct sbrec_port_binding *lport_lookup_by_key(
     struct ovsdb_idl_index *sbrec_port_binding_by_key,
     uint64_t dp_key, uint64_t port_key);
 
+const struct sbrec_port_binding *lport_lookup_by_type(
+    struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
+    struct ovsdb_idl_index *sbrec_port_binding_by_type,
+    uint64_t dp_key, const char *port_type);
+
 const struct sbrec_datapath_binding *datapath_lookup_by_key(
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key, uint64_t dp_key);
 
