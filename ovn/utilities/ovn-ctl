@@ -95,7 +95,7 @@ promote_ovnsb() {
 
 start_ovsdb__() {
     local DB=$1 db=$2 schema_name=$3 table_name=$4
-    local pid
+    local db_pid_file
     local cluster_local_addr
     local cluster_local_port
     local cluster_local_proto
@@ -116,7 +116,7 @@ start_ovsdb__() {
     local addr
     local active_conf_file
     local use_remote_in_db
-    eval pid=\$DB_${DB}_PID
+    eval db_pid_file=\$DB_${DB}_PID
     eval cluster_local_addr=\$DB_${DB}_CLUSTER_LOCAL_ADDR
     eval cluster_local_port=\$DB_${DB}_CLUSTER_LOCAL_PORT
     eval cluster_local_proto=\$DB_${DB}_CLUSTER_LOCAL_PROTO
@@ -139,7 +139,7 @@ start_ovsdb__() {
     eval use_remote_in_db=\$DB_${DB}_USE_REMOTE_IN_DB
 
     # Check and eventually start ovsdb-server for DB
-    if pidfile_is_running $pid; then
+    if pidfile_is_running $db_pid_file; then
         return
     fi
 
@@ -169,7 +169,7 @@ $cluster_remote_port
 
     set ovsdb-server
     set "$@" $log --log-file=$logfile
-    set "$@" --remote=punix:$sock --pidfile=$pid
+    set "$@" --remote=punix:$sock --pidfile=$db_pid_file
     set "$@" --unixctl=ovn${db}_db.ctl
 
     if test X"$detach" != Xno; then
