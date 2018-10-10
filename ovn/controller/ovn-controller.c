@@ -731,7 +731,8 @@ main(int argc, char *argv[])
 
                     if (chassis_id) {
                         bfd_run(&ctx, br_int, chassis, &local_datapaths,
-                                &chassis_index);
+                                &chassis_index,
+                                sbrec_sb_global_first(ovnsb_idl_loop.idl));
                     }
                     physical_run(&ctx, mff_ovn_geneve,
                                  br_int, chassis, &ct_zones,

@@ -1,7 +1,7 @@
 {
     "name": "OVN_Northbound",
-    "version": "5.10.0",
-    "cksum": "626737541 17810",
+    "version": "5.10.1",
+    "cksum": "64444197 17965",
     "tables": {
         "NB_Global": {
             "columns": {
@@ -19,7 +19,10 @@
                 "ssl": {
                     "type": {"key": {"type": "uuid",
                                      "refTable": "SSL"},
-                                     "min": 0, "max": 1}}},
+                                     "min": 0, "max": 1}},
+                "options": {
+                    "type": {"key": "string", "value": "string",
+                             "min": 0, "max": "unlimited"}}},
             "maxRows": 1,
             "isRoot": true},
         "Logical_Switch": {
