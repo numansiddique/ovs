@@ -58,6 +58,7 @@ v2.10.0 - 18 Aug 2018
        both kernel datapath and userspace datapath.
      * Added port-based and flow-based ERSPAN tunnel port support, added
        OpenFlow rules matching ERSPAN fields. See ovs-fields(7).
+   - OVS now honors 'updelay' and 'downdelay' for bonds with LACP configured.
 
 v2.9.0 - 19 Feb 2018
 --------------------
