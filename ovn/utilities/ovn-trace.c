@@ -2109,8 +2109,10 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
 
         case OVNACT_OVNFIELD_LOAD:
             break;
-        }
 
+        case OVNACT_CHECK_PKT_LARGER:
+            break;
+        }
     }
     ds_destroy(&s);
 }

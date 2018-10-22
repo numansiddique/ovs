@@ -435,6 +435,16 @@ pinctrl_handle_icmp(const struct flow *ip_flow, struct dp_packet *pkt_in,
     eh->eth_src = ip_flow->dl_src;
 
     if (get_dl_type(ip_flow) == htons(ETH_TYPE_IP)) {
+        struct ip_header *in_ip = dp_packet_l3(pkt_in);
+        uint16_t in_ip_len = ntohs(in_ip->ip_tot_len);
+        if (in_ip_len < IP_HEADER_LEN) {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+            VLOG_WARN_RL(&rl,
+                        "ICMP action on IP packet with invalid length (%u)",
+                        in_ip_len);
+            return;
+        }
+
         struct ip_header *nh = dp_packet_put_zeros(&packet, sizeof *nh);
 
         eh->eth_type = htons(ETH_TYPE_IP);
@@ -452,6 +462,8 @@ pinctrl_handle_icmp(const struct flow *ip_flow, struct dp_packet *pkt_in,
         packet_set_icmp(&packet, ICMP4_DST_UNREACH, 1);
         uint8_t *n_ovnfield_acts = ofpbuf_try_pull(userdata,
                                                    sizeof *n_ovnfield_acts);
+        bool include_orig_ip_datagram = false;
+
         if (n_ovnfield_acts && *n_ovnfield_acts) {
             for (uint8_t i = 0; i < *n_ovnfield_acts; i++) {
                  struct ovnfield_act_header *oah =
@@ -465,11 +477,39 @@ pinctrl_handle_icmp(const struct flow *ip_flow, struct dp_packet *pkt_in,
                      ovs_be16 *mtu = ofpbuf_try_pull(userdata, sizeof *mtu);
                      if (mtu) {
                          ih->icmp_fields.frag.mtu = *mtu;
+                         include_orig_ip_datagram = true;
                      }
                      break;
                  }
                  }
             }
+        }
+
+        if (include_orig_ip_datagram) {
+            /* RFC 1122: 3.2.2	MUST send at least the IP header and 8 bytes
+             * of header. MAY send more.
+             * RFC says return as much as we can without exceeding 576
+             * bytes.
+             * So, lets return as much as we can. */
+
+            /* Calculate available room to include the original IP + data. */
+            nh = dp_packet_l3(&packet);
+            uint16_t room = 576 - (sizeof *eh + ntohs(nh->ip_tot_len));
+            if (in_ip_len > room) {
+                in_ip_len = room;
+            }
+            dp_packet_put(&packet, in_ip, in_ip_len);
+
+            /* dp_packet_put may reallocate the buffer. Get the l3 and l4
+             * header pointers again. */
+            nh = dp_packet_l3(&packet);
+            ih = dp_packet_l4(&packet);
+            uint16_t ip_total_len = ntohs(nh->ip_tot_len) + in_ip_len;
+            nh->ip_tot_len = htons(ip_total_len);
+            ih->icmp_csum = 0;
+            ih->icmp_csum = csum(ih, sizeof *ih + in_ip_len);
+            nh->ip_csum = 0;
+            nh->ip_csum = csum(nh, sizeof *nh);
         }
     } else {
         struct ip6_hdr *nh = dp_packet_put_zeros(&packet, sizeof *nh);
