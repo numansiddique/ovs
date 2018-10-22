@@ -452,6 +452,8 @@ pinctrl_handle_icmp(const struct flow *ip_flow, struct dp_packet *pkt_in,
         packet_set_icmp(&packet, ICMP4_DST_UNREACH, 1);
         uint8_t *n_ovnfield_acts = ofpbuf_try_pull(userdata,
                                                    sizeof *n_ovnfield_acts);
+        bool include_orig_ip_datagram = false;
+
         if (n_ovnfield_acts && *n_ovnfield_acts) {
             for (uint8_t i = 0; i < *n_ovnfield_acts; i++) {
                  struct ovnfield_act_header *oah =
@@ -465,11 +467,24 @@ pinctrl_handle_icmp(const struct flow *ip_flow, struct dp_packet *pkt_in,
                      ovs_be16 *mtu = ofpbuf_try_pull(userdata, sizeof *mtu);
                      if (mtu) {
                          ih->icmp_fields.frag.mtu = *mtu;
+                         include_orig_ip_datagram = true;
                      }
                      break;
                  }
                  }
             }
+        }
+
+        if (include_orig_ip_datagram) {
+            size_t orig_ip_datagram_len = sizeof(struct ip_header) + 8;
+            uint8_t *data = dp_packet_put_zeros(&packet, orig_ip_datagram_len);
+            memcpy(data, dp_packet_l3(pkt_in), orig_ip_datagram_len);
+            nh->ip_tot_len += htons(orig_ip_datagram_len);
+            ih->icmp_csum = 0;
+            ih->icmp_csum = csum(ih, sizeof *ih + orig_ip_datagram_len);
+            nh->ip_csum = 0;
+            nh->ip_csum = csum(nh, sizeof *nh);
+
         }
     } else {
         struct ip6_hdr *nh = dp_packet_put_zeros(&packet, sizeof *nh);
