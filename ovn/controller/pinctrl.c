@@ -109,7 +109,9 @@ static void send_ipv6_ras(
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
     struct ovsdb_idl_index *sbrec_port_binding_by_name,
     const struct hmap *local_datapaths);
-;
+static void pinctrl_handle_check_pkt_len(
+    struct dp_packet *pkt_in, struct ofputil_packet_in *pin,
+    struct ofpbuf *userdata, struct ofpbuf *continuation);
 
 COVERAGE_DEFINE(pinctrl_drop_put_mac_binding);
 COVERAGE_DEFINE(pinctrl_drop_buffered_packets_map);
@@ -1398,6 +1400,10 @@ process_packet_in(const struct ofp_header *msg,
     case ACTION_OPCODE_TCP_RESET:
         pinctrl_handle_tcp_reset(&headers, &packet, &pin.flow_metadata,
                                  &userdata);
+        break;
+
+    case ACTION_OPCODE_CHECK_PKT_LEN:
+        pinctrl_handle_check_pkt_len(&packet, &pin, &userdata, &continuation);
         break;
 
     default:
@@ -2706,4 +2712,59 @@ exit:
     }
     queue_msg(ofputil_encode_resume(pin, continuation, proto));
     dp_packet_uninit(pkt_out_ptr);
+}
+
+static void
+pinctrl_handle_check_pkt_len(struct dp_packet *pkt_in,
+                             struct ofputil_packet_in *pin,
+                             struct ofpbuf *userdata,
+                             struct ofpbuf *continuation)
+{
+    enum ofp_version version = rconn_get_version(swconn);
+    enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
+    uint32_t success = 0;
+
+    /* Parse result field. */
+    const struct mf_field *f;
+    enum ofperr ofperr = nx_pull_header(userdata, NULL, &f, NULL);
+    if (ofperr) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+        VLOG_WARN_RL(&rl, "bad result OXM (%s)", ofperr_to_string(ofperr));
+        goto exit;
+    }
+
+    /* Parse result offset. */
+    ovs_be32 *ofsp = ofpbuf_try_pull(userdata, sizeof *ofsp);
+    if (!ofsp) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+        VLOG_WARN_RL(&rl, "offset not present in the userdata");
+        goto exit;
+    }
+
+    /* Check that the result is valid and writable. */
+    struct mf_subfield dst = { .field = f, .ofs = ntohl(*ofsp), .n_bits = 1 };
+    ofperr = mf_check_dst(&dst, NULL);
+    if (ofperr) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+        VLOG_WARN_RL(&rl, "bad result bit (%s)", ofperr_to_string(ofperr));
+        goto exit;
+    }
+
+    ovs_be16 *ip_pkt_len = ofpbuf_try_pull(userdata, sizeof *ip_pkt_len);
+    if (!ip_pkt_len) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+        VLOG_WARN_RL(&rl, "IP packet length not present in the userdata");
+        goto exit;
+    }
+
+    if (dp_packet_size(pkt_in) >= ntohs(*ip_pkt_len)) {
+        success = 1;
+    }
+exit:
+    if (!ofperr) {
+        union mf_subvalue sv;
+        sv.u8_val = success;
+        mf_write_subfield(&dst, &sv, &pin->flow_metadata);
+    }
+    queue_msg(ofputil_encode_resume(pin, continuation, proto));
 }

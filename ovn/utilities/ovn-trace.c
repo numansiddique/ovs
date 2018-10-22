@@ -2106,8 +2106,10 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
             execute_tcp_reset(ovnact_get_TCP_RESET(a), dp, uflow, table_id,
                               pipeline, super);
             break;
-        }
 
+        case OVNACT_CHECK_PKT_LEN:
+            break;
+        }
     }
     ds_destroy(&s);
 }

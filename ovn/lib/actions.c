@@ -2286,6 +2286,60 @@ ovnact_set_meter_free(struct ovnact_set_meter *ct OVS_UNUSED)
 {
 }
 
+static void
+parse_check_pkt_len(struct action_context *ctx,
+                       const struct expr_field *dst,
+                       struct ovnact_check_pkt_len *cipl)
+{
+    int pkt_len;
+
+    lexer_get(ctx->lexer); /* Skip check_pkt_len. */
+    if (!lexer_force_match(ctx->lexer, LEX_T_LPAREN)
+        || !lexer_get_int(ctx->lexer, &pkt_len)
+        || !lexer_force_match(ctx->lexer, LEX_T_RPAREN)) {
+        return;
+    }
+
+    /* Validate that the destination is a 1-bit, modifiable field. */
+    char *error = expr_type_check(dst, 1, true);
+    if (error) {
+        lexer_error(ctx->lexer, "%s", error);
+        free(error);
+        return;
+    }
+    cipl->dst = *dst;
+    cipl->pkt_len = htons(pkt_len);
+}
+
+static void
+format_CHECK_PKT_LEN(const struct ovnact_check_pkt_len *cipl,
+                        struct ds *s)
+{
+    expr_field_format(&cipl->dst, s);
+    ds_put_format(s, " = check_pkt_len(%d)", cipl->pkt_len);
+}
+
+static void
+encode_CHECK_PKT_LEN(const struct ovnact_check_pkt_len *cipl,
+                        const struct ovnact_encode_params *ep OVS_UNUSED,
+                        struct ofpbuf *ofpacts)
+{
+    struct mf_subfield dst = expr_resolve_field(&cipl->dst);
+
+    size_t oc_offset = encode_start_controller_op(
+        ACTION_OPCODE_CHECK_PKT_LEN, true, NX_CTLR_NO_METER, ofpacts);
+    nx_put_header(ofpacts, dst.field->id, OFP13_VERSION, false);
+    ovs_be32 ofs = htonl(dst.ofs);
+    ofpbuf_put(ofpacts, &ofs, sizeof ofs);
+    ofpbuf_put(ofpacts, &cipl->pkt_len, sizeof cipl->pkt_len);
+    encode_finish_controller_op(oc_offset, ofpacts);
+}
+
+static void
+ovnact_check_pkt_len_free(struct ovnact_check_pkt_len *ct OVS_UNUSED)
+{
+}
+
 /* Parses an assignment or exchange or put_dhcp_opts action. */
 static void
 parse_set_action(struct action_context *ctx)
@@ -2315,6 +2369,10 @@ parse_set_action(struct action_context *ctx)
                 && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
             parse_put_nd_ra_opts(ctx, &lhs,
                                  ovnact_put_PUT_ND_RA_OPTS(ctx->ovnacts));
+        } else if (!strcmp(ctx->lexer->token.s, "check_pkt_len")
+                && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
+            parse_check_pkt_len(ctx, &lhs,
+                                   ovnact_put_CHECK_PKT_LEN(ctx->ovnacts));
         } else {
             parse_assignment_action(ctx, false, &lhs);
         }
