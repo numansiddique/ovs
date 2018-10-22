@@ -143,8 +143,10 @@ enum ovn_stage {
     PIPELINE_STAGE(ROUTER, IN,  ND_RA_RESPONSE, 6, "lr_in_nd_ra_response") \
     PIPELINE_STAGE(ROUTER, IN,  IP_ROUTING,     7, "lr_in_ip_routing")   \
     PIPELINE_STAGE(ROUTER, IN,  ARP_RESOLVE,    8, "lr_in_arp_resolve")  \
-    PIPELINE_STAGE(ROUTER, IN,  GW_REDIRECT,    9, "lr_in_gw_redirect")  \
-    PIPELINE_STAGE(ROUTER, IN,  ARP_REQUEST,    10, "lr_in_arp_request")  \
+    PIPELINE_STAGE(ROUTER, IN,  CHK_PKT_LEN   , 9, "lr_in_chk_pkt_len")  \
+    PIPELINE_STAGE(ROUTER, IN,  LARGER_PKTS,    10,"lr_in_larger_pkts")  \
+    PIPELINE_STAGE(ROUTER, IN,  GW_REDIRECT,    11, "lr_in_gw_redirect")  \
+    PIPELINE_STAGE(ROUTER, IN,  ARP_REQUEST,    12, "lr_in_arp_request")  \
                                                                       \
     /* Logical router egress stages. */                               \
     PIPELINE_STAGE(ROUTER, OUT, UNDNAT,    0, "lr_out_undnat")        \
@@ -172,6 +174,7 @@ enum ovn_stage {
 #define REGBIT_DHCP_OPTS_RESULT  "reg0[3]"
 #define REGBIT_DNS_LOOKUP_RESULT "reg0[4]"
 #define REGBIT_ND_RA_OPTS_RESULT "reg0[5]"
+#define REGBIT_PKT_LARGER        "reg0[6]"
 
 /* Register definitions for switches and routers. */
 #define REGBIT_NAT_REDIRECT     "reg9[0]"
@@ -6570,6 +6573,54 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
 
         ovn_lflow_add(lflows, od, S_ROUTER_IN_ARP_RESOLVE, 0, "ip6",
                       "get_nd(outport, xxreg0); next;");
+    }
+
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbr) {
+            continue;
+        }
+
+        if (od->l3dgw_port && od->l3redirect_port) {
+            int gw_mtu = 0;
+            if (od->l3dgw_port->nbrp) {
+                 gw_mtu = smap_get_int(&od->l3dgw_port->nbrp->options,
+                                       "gateway_mtu", 0);
+            }
+            if (gw_mtu > 0) {
+                ds_clear(&match);
+                ds_put_format(&match, "outport == %s && "
+                              "is_chassis_resident(%s) && ip4",
+                              od->l3dgw_port->json_key,
+                              od->l3redirect_port->json_key);
+                ds_clear(&actions);
+                ds_put_format(&actions,
+                              REGBIT_PKT_LARGER" = check_pkt_larger(%d);"
+                              " next;", gw_mtu);
+                ovn_lflow_add(lflows, od, S_ROUTER_IN_CHK_PKT_LEN, 50,
+                              ds_cstr(&match), ds_cstr(&actions));
+
+                ds_put_cstr(&match, " && "REGBIT_PKT_LARGER);
+                ds_clear(&actions);
+                ds_put_format(&actions,
+                    "icmp4 {"
+                    "eth.dst <-> eth.src; "
+                    "icmp4.type = 3; /* Destination Unreachable. */ "
+                    "icmp4.code = 4; /* Frag Needed and DF was Set. */ "
+                    "icmp4.frag_mtu = %d; "
+                    "ip4.dst = ip4.src; "
+                    "ip4.src = %s; "
+                    "ip.ttl = 255; "
+                    "next; };",
+                    gw_mtu, od->l3dgw_port->lrp_networks.ipv4_addrs[0].addr_s);
+                ovn_lflow_add(lflows, od, S_ROUTER_IN_LARGER_PKTS, 50,
+                              ds_cstr(&match), ds_cstr(&actions));
+            }
+        }
+        /* Packets are allowed by default. */
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_CHK_PKT_LEN, 0, "1",
+                      "next;");
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_LARGER_PKTS, 0, "1",
+                      "next;");
     }
 
     /* Logical router ingress table 9: Gateway redirect.
