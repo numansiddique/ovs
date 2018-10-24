@@ -5565,6 +5565,7 @@ reversible_actions(const struct ofpact *ofpacts, size_t ofpacts_len)
         case OFPACT_UNROLL_XLATE:
         case OFPACT_WRITE_ACTIONS:
         case OFPACT_WRITE_METADATA:
+        case OFPACT_CHK_PKT_LEN_GR:
             break;
 
         case OFPACT_CT:
@@ -5873,6 +5874,7 @@ freeze_unroll_actions(const struct ofpact *a, const struct ofpact *end,
         case OFPACT_CT:
         case OFPACT_CT_CLEAR:
         case OFPACT_NAT:
+        case OFPACT_CHK_PKT_LEN_GR:
             /* These may not generate PACKET INs. */
             break;
 
@@ -6063,6 +6065,27 @@ compose_ct_clear_action(struct xlate_ctx *ctx)
     if (ctx->xbridge->support.ct_clear) {
         nl_msg_put_flag(ctx->odp_actions,  OVS_ACTION_ATTR_CT_CLEAR);
     }
+}
+
+static void
+xlate_check_pkt_len(struct xlate_ctx *ctx,
+                    struct ofpact_chk_pkt_len *chk_pkt_len)
+{
+    VLOG_INFO("%s : %s : %d entered ", __FILE__, __FUNCTION__, __LINE__);
+    if (!ctx->xin->packet) {
+        VLOG_INFO("%s : %s : %d : packet is non.. returning ", __FILE__, __FUNCTION__, __LINE__);
+        return;
+    }
+    if (!chk_pkt_len->dst.field) {
+        VLOG_INFO("%s : %s : %d : dst field is none.. returning ", __FILE__, __FUNCTION__, __LINE__);
+        return;
+    }
+    union mf_subvalue value;
+    memset(&value, 0, sizeof value);
+    value.u8_val = (dp_packet_size(ctx->xin->packet) > chk_pkt_len->pkt_len);
+    VLOG_INFO("%s : %s : %d : pkt_len = [%u] : actual pkt len = [%u] ",
+              __FILE__, __FUNCTION__, __LINE__, chk_pkt_len->pkt_len, dp_packet_size(ctx->xin->packet));
+    mf_write_subfield_flow(&chk_pkt_len->dst, &value, &ctx->xin->flow);
 }
 
 static void
@@ -6387,6 +6410,7 @@ recirc_for_mpls(const struct ofpact *a, struct xlate_ctx *ctx)
     case OFPACT_WRITE_ACTIONS:
     case OFPACT_WRITE_METADATA:
     case OFPACT_GOTO_TABLE:
+    case OFPACT_CHK_PKT_LEN_GR:
     default:
         break;
     }
@@ -6841,6 +6865,10 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
 
         case OFPACT_DEBUG_SLOW:
             ctx->xout->slow |= SLOW_ACTION;
+            break;
+
+        case OFPACT_CHK_PKT_LEN_GR:
+            xlate_check_pkt_len(ctx, ofpact_get_CHK_PKT_LEN_GR(a));
             break;
         }
 

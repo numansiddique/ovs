@@ -1114,6 +1114,7 @@ upcall_receive(struct upcall *upcall, const struct dpif_backer *backer,
 {
     int error;
 
+    VLOG_INFO("%s : %s : %d entered : packet length = [%u] ", __FILE__, __FUNCTION__, __LINE__, dp_packet_size(packet));
     upcall->type = classify_upcall(type, userdata, &upcall->cookie);
     if (upcall->type == BAD_UPCALL) {
         return EAGAIN;

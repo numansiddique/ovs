@@ -123,6 +123,7 @@ struct vl_mff_map;
     OFPACT(NAT,             ofpact_nat,         ofpact, "nat")          \
     OFPACT(OUTPUT_TRUNC,    ofpact_output_trunc,ofpact, "output_trunc") \
     OFPACT(CLONE,           ofpact_nest,        actions, "clone")       \
+    OFPACT(CHK_PKT_LEN_GR,  ofpact_chk_pkt_len, ofpact, "chk_pkt_len_gr")  \
                                                                         \
     /* Debugging actions.                                               \
      *                                                                  \
@@ -570,6 +571,15 @@ struct ofpact_meter {
     struct ofpact ofpact;
     uint32_t meter_id;
     uint32_t provider_meter_id;
+};
+
+/* OFPACT_CHK_PKT_LEN_GR.
+ *
+ * Used for NXAST_CHK_PKT_LEN_GR. */
+struct ofpact_chk_pkt_len {
+    struct ofpact ofpact;
+    uint16_t pkt_len;
+    struct mf_subfield dst;
 };
 
 /* OFPACT_WRITE_ACTIONS, OFPACT_CLONE.

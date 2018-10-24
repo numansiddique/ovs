@@ -355,6 +355,8 @@ enum ofp_raw_action_type {
     /* NX1.3+(48): void. */
     NXAST_RAW_DEC_NSH_TTL,
 
+    /* NX1.0+(49): struct nx_action_chk_pkt_len_gr, ... */
+    OFPAT_RAW_CHK_PKT_LEN_GR,
 /* ## ------------------ ## */
 /* ## Debugging actions. ## */
 /* ## ------------------ ## */
@@ -492,6 +494,7 @@ ofpact_next_flattened(const struct ofpact *ofpact)
     case OFPACT_ENCAP:
     case OFPACT_DECAP:
     case OFPACT_DEC_NSH_TTL:
+    case OFPACT_CHK_PKT_LEN_GR:
         return ofpact_next(ofpact);
 
     case OFPACT_CLONE:
@@ -7399,6 +7402,92 @@ check_WRITE_METADATA(const struct ofpact_metadata *a OVS_UNUSED,
     return 0;
 }
 
+/* Check packet length action. */
+
+struct nx_action_chk_pkt_len_gr {
+    ovs_be16 type;              /* OFPAT_VENDOR. */
+    ovs_be16 len;               /* 24. */
+    ovs_be32 vendor;            /* NX_VENDOR_ID. */
+    ovs_be16 subtype;           /* NXAST_OUTPUT_REG. */
+    uint8_t pad[6];
+    ovs_be16 pkt_len;
+    ovs_be16 ofs;             /* (ofs << 6) | (n_bits - 1). */
+    ovs_be32 dst;                   /* Destination register. */
+};
+
+//OFP_ASSERT(sizeof(struct nx_action_chk_pkt_len_gr) == 8);
+
+static enum ofperr
+decode_OFPAT_RAW_CHK_PKT_LEN_GR(const struct nx_action_chk_pkt_len_gr *nx_chk_pkt_len,
+                                enum ofp_version ofp_version OVS_UNUSED,
+                                struct ofpbuf *out)
+{
+    struct ofpact_chk_pkt_len *chk_pkt_len = ofpact_put_CHK_PKT_LEN_GR(out);
+    chk_pkt_len->pkt_len = ntohs(nx_chk_pkt_len->pkt_len);
+    const struct mf_field *mf = mf_from_nxm_header(ntohl(nx_chk_pkt_len->dst), NULL);
+    chk_pkt_len->dst.field = mf;
+    chk_pkt_len->dst.n_bits = 1;
+    chk_pkt_len->dst.ofs = nx_chk_pkt_len->ofs;
+    return 0;
+}
+
+static void
+encode_CHK_PKT_LEN_GR(const struct ofpact_chk_pkt_len *chk_pkt_len OVS_UNUSED,
+                 enum ofp_version ofp_version OVS_UNUSED, struct ofpbuf *out OVS_UNUSED)
+{
+    struct nx_action_chk_pkt_len_gr *nx_chk_pkt_len = put_OFPAT_CHK_PKT_LEN_GR(out);
+    nx_chk_pkt_len->pkt_len = htons(chk_pkt_len->pkt_len);
+    nx_chk_pkt_len->ofs = chk_pkt_len->dst.ofs;
+
+    if (chk_pkt_len->dst.field) {
+        nx_chk_pkt_len->dst = htonl(nxm_header_from_mff(chk_pkt_len->dst.field));
+    }
+}
+
+static char * OVS_WARN_UNUSED_RESULT
+parse_CHK_PKT_LEN_GR(char *arg, const struct ofpact_parse_params *pp)
+{
+    char *value;
+    char *delim;
+    char *key;
+    char *error = set_field_split_str(arg, &key, &value, &delim);
+    if (error) {
+        return error;
+    }
+    delim[0] = '\0';
+    struct mf_subfield dst;
+    error = mf_parse_subfield(&dst, key);
+    if (error) {
+        return error;
+    }
+
+    struct ofpact_chk_pkt_len *chk_pkt_len = ofpact_put_CHK_PKT_LEN_GR(
+        pp->ofpacts);
+    error = str_to_u16(value, NULL, &chk_pkt_len->pkt_len);
+    if (error) {
+        return error;
+    }
+    chk_pkt_len->dst = dst;
+    return NULL;
+}
+
+static void
+format_CHK_PKT_LEN_GR(const struct ofpact_chk_pkt_len *a,
+                 const struct ofpact_format_params *fp)
+{
+    ds_put_format(fp->s, "%schk_pkt_len_gr:%s%"PRIu32"->",
+                  colors.param, colors.end, a->pkt_len);
+    mf_format_subfield(&a->dst, fp->s);
+}
+
+static enum ofperr
+check_CHK_PKT_LEN_GR(const struct ofpact_chk_pkt_len *a OVS_UNUSED,
+                const struct ofpact_check_params *cp OVS_UNUSED)
+{
+    return 0;
+}
+
+
 /* Goto-Table instruction. */
 
 static void
@@ -7685,6 +7774,7 @@ action_set_classify(const struct ofpact *a)
     case OFPACT_WRITE_METADATA:
     case OFPACT_DEBUG_RECIRC:
     case OFPACT_DEBUG_SLOW:
+    case OFPACT_CHK_PKT_LEN_GR:
         return ACTION_SLOT_INVALID;
 
     default:
@@ -7884,6 +7974,7 @@ ovs_instruction_type_from_ofpact_type(enum ofpact_type type)
     case OFPACT_ENCAP:
     case OFPACT_DECAP:
     case OFPACT_DEC_NSH_TTL:
+    case OFPACT_CHK_PKT_LEN_GR:
     default:
         return OVSINST_OFPIT11_APPLY_ACTIONS;
     }
@@ -8754,6 +8845,7 @@ ofpact_outputs_to_port(const struct ofpact *ofpact, ofp_port_t port)
     case OFPACT_ENCAP:
     case OFPACT_DECAP:
     case OFPACT_DEC_NSH_TTL:
+    case OFPACT_CHK_PKT_LEN_GR:
     default:
         return false;
     }
@@ -8990,7 +9082,6 @@ ofpacts_parse__(char *str, const struct ofpact_parse_params *pp,
         enum ofpact_type type;
         char *error = NULL;
         ofp_port_t port;
-
         if (ofpact_type_from_name(key, &type)) {
             error = ofpact_parse(type, value, pp);
             inst = ovs_instruction_type_from_ofpact_type(type);
