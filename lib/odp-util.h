@@ -45,7 +45,9 @@ struct pkt_metadata;
     SPR(SLOW_ACTION,     "action",                                      \
         "Uses action(s) not supported by datapath")                     \
     SPR(SLOW_MATCH,      "match",                                       \
-        "Datapath can't match specifically enough")
+        "Datapath can't match specifically enough")                     \
+    SPR(CHECK_PKT_LEN,   "check_pkt_len",                               \
+        "Check packet length condition matched")
 
 /* Indexes for slow-path reasons.  Client code uses "enum slow_path_reason"
  * values instead of these, these are just a way to construct those. */

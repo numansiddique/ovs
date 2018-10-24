@@ -5565,6 +5565,7 @@ reversible_actions(const struct ofpact *ofpacts, size_t ofpacts_len)
         case OFPACT_UNROLL_XLATE:
         case OFPACT_WRITE_ACTIONS:
         case OFPACT_WRITE_METADATA:
+        case OFPACT_CHECK_PKT_LARGER:
             break;
 
         case OFPACT_CT:
@@ -5873,6 +5874,7 @@ freeze_unroll_actions(const struct ofpact *a, const struct ofpact *end,
         case OFPACT_CT:
         case OFPACT_CT_CLEAR:
         case OFPACT_NAT:
+        case OFPACT_CHECK_PKT_LARGER:
             /* These may not generate PACKET INs. */
             break;
 
@@ -6062,6 +6064,60 @@ compose_ct_clear_action(struct xlate_ctx *ctx)
      * compatibility, only append it if the dpif supports it. */
     if (ctx->xbridge->support.ct_clear) {
         nl_msg_put_flag(ctx->odp_actions,  OVS_ACTION_ATTR_CT_CLEAR);
+    }
+}
+
+static void
+xlate_check_pkt_larger(struct xlate_ctx *ctx,
+                       struct ofpact_check_pkt_larger *check_pkt_larger)
+{
+    if (!check_pkt_larger->dst.field) {
+        return;
+    }
+
+    union mf_subvalue value;
+    memset(&value, 0, sizeof value);
+    uint8_t is_pkt_larger = 0;
+    if (ctx->xin->packet) {
+        is_pkt_larger =
+            dp_packet_size(ctx->xin->packet) > check_pkt_larger->pkt_len;
+    }
+    value.u8_val = is_pkt_larger;
+    mf_write_subfield_flow(&check_pkt_larger->dst, &value, &ctx->xin->flow);
+    if (ctx->xbridge->support.check_pkt_len) {
+        size_t offset = nl_msg_start_nested(ctx->odp_actions,
+                                            OVS_ACTION_ATTR_CHECK_PKT_LEN);
+        nl_msg_put_u16(ctx->odp_actions, OVS_CHECK_PKT_LEN_ATTR_PKT_LEN,
+                       check_pkt_larger->pkt_len);
+        uint8_t condition;
+        if (is_pkt_larger) {
+            condition = OVS_CHECK_PKT_LEN_COND_LESSER_EQ;
+        } else {
+            condition = OVS_CHECK_PKT_LEN_COND_GREATER;
+        }
+        nl_msg_put_u8(ctx->odp_actions, OVS_CHECK_PKT_LEN_ATTR_USERSPACE_COND,
+                       condition);
+
+        struct user_action_cookie cookie = {
+            .type = USER_ACTION_COOKIE_SLOW_PATH,
+            .ofp_in_port = ctx->xin->flow.in_port.ofp_port,
+            .ofproto_uuid = ctx->xbridge->ofproto->uuid,
+            .slow_path.reason = CHECK_PKT_LEN,
+        };
+        odp_port_t odp_port = ofp_port_to_odp_port(
+            ctx->xbridge, ctx->xin->flow.in_port.ofp_port);
+        uint32_t pid = dpif_port_get_pid(ctx->xbridge->dpif, odp_port);
+        size_t userspace_offset = nl_msg_start_nested(
+            ctx->odp_actions, OVS_CHECK_PKT_LEN_ATTR_USERPACE);
+        odp_put_userspace_action(pid, &cookie, sizeof cookie, ODPP_NONE,
+                                 false, ctx->odp_actions);
+        nl_msg_end_nested(ctx->odp_actions, userspace_offset);
+        nl_msg_end_nested(ctx->odp_actions, offset);
+    } else {
+        /* If datapath doesn't support check_pkt_len action, then set the
+         * SLOW_ACTION flag so that ..
+         */
+        ctx->xout->slow |= SLOW_ACTION;
     }
 }
 
@@ -6387,6 +6443,7 @@ recirc_for_mpls(const struct ofpact *a, struct xlate_ctx *ctx)
     case OFPACT_WRITE_ACTIONS:
     case OFPACT_WRITE_METADATA:
     case OFPACT_GOTO_TABLE:
+    case OFPACT_CHECK_PKT_LARGER:
     default:
         break;
     }
@@ -6841,6 +6898,10 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
 
         case OFPACT_DEBUG_SLOW:
             ctx->xout->slow |= SLOW_ACTION;
+            break;
+
+        case OFPACT_CHECK_PKT_LARGER:
+            xlate_check_pkt_larger(ctx, ofpact_get_CHECK_PKT_LARGER(a));
             break;
         }
 
