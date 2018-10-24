@@ -131,6 +131,7 @@ odp_action_len(uint16_t type)
     case OVS_ACTION_ATTR_CLONE: return ATTR_LEN_VARIABLE;
     case OVS_ACTION_ATTR_PUSH_NSH: return ATTR_LEN_VARIABLE;
     case OVS_ACTION_ATTR_POP_NSH: return 0;
+    case OVS_ACTION_ATTR_CHECK_PKT_LEN: return ATTR_LEN_VARIABLE;
 
     case OVS_ACTION_ATTR_UNSPEC:
     case __OVS_ACTION_ATTR_MAX:
@@ -1042,6 +1043,42 @@ format_odp_set_nsh(struct ds *ds, const struct nlattr *attr)
     ds_put_cstr(ds, "))");
 }
 
+static void
+format_odp_check_pkt_len_action(struct ds *ds, const struct nlattr *attr,
+                                const struct hmap *portno_names)
+{
+    static const struct nl_policy ovs_cpl_policy[] = {
+            [OVS_CHECK_PKT_LEN_ATTR_PKT_LEN] = { .type = NL_A_U16 },
+            [OVS_CHECK_PKT_LEN_ATTR_USERSPACE_COND] = { .type = NL_A_U8 },
+            [OVS_CHECK_PKT_LEN_ATTR_USERPACE] = { .type = NL_A_NESTED }
+    };
+    struct nlattr *a[ARRAY_SIZE(ovs_cpl_policy)];
+    const struct nlattr *userspace;
+
+    ds_put_cstr(ds, "check_pkt_len");
+    if (!nl_parse_nested(attr, ovs_cpl_policy, a, ARRAY_SIZE(a))) {
+        ds_put_cstr(ds, "(error)");
+        return;
+    }
+
+    uint8_t cond = nl_attr_get_u8(a[OVS_CHECK_PKT_LEN_ATTR_USERSPACE_COND]);
+    if (cond != OVS_CHECK_PKT_LEN_COND_GREATER &&
+        cond != OVS_CHECK_PKT_LEN_COND_LESSER_EQ) {
+        ds_put_cstr(ds, "(error)");
+        return;
+    }
+
+    uint16_t pkt_len = nl_attr_get_u8(a[OVS_CHECK_PKT_LEN_ATTR_PKT_LEN]);
+    if (cond == OVS_CHECK_PKT_LEN_COND_GREATER) {
+        ds_put_format(ds, "(> %u ? ", pkt_len);
+    } else {
+        ds_put_format(ds, "(<= %u ? ", pkt_len);
+    }
+
+    userspace = nl_attr_get(a[OVS_CHECK_PKT_LEN_ATTR_USERPACE]);
+    format_odp_userspace_action(ds, userspace, portno_names);
+    ds_put_cstr(ds, ")");
+}
 
 static void
 format_odp_action(struct ds *ds, const struct nlattr *a,
@@ -1180,6 +1217,9 @@ format_odp_action(struct ds *ds, const struct nlattr *a,
     }
     case OVS_ACTION_ATTR_POP_NSH:
         ds_put_cstr(ds, "pop_nsh()");
+        break;
+    case OVS_ACTION_ATTR_CHECK_PKT_LEN:
+        format_odp_check_pkt_len_action(ds, a, portno_names);
         break;
     case OVS_ACTION_ATTR_UNSPEC:
     case __OVS_ACTION_ATTR_MAX:

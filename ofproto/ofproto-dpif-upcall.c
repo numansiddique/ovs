@@ -193,7 +193,8 @@ enum upcall_type {
     SFLOW_UPCALL,               /* sFlow sample. */
     FLOW_SAMPLE_UPCALL,         /* Per-flow sampling. */
     IPFIX_UPCALL,               /* Per-bridge sampling. */
-    CONTROLLER_UPCALL           /* Destined for the controller. */
+    CONTROLLER_UPCALL,           /* Destined for the controller. */
+    CHECK_PKT_LEN_UPCALL        /* check packet length condition upcall. */
 };
 
 enum reval_result {
@@ -368,9 +369,11 @@ static int ukey_create_from_dpif_flow(const struct udpif *,
                                       struct udpif_key **);
 static void ukey_get_actions(struct udpif_key *, const struct nlattr **actions,
                              size_t *size);
-static bool ukey_install__(struct udpif *, struct udpif_key *ukey)
+static bool ukey_install__(struct udpif *, struct udpif_key *ukey,
+                           bool force_replace_old_ukey)
     OVS_TRY_LOCK(true, ukey->mutex);
-static bool ukey_install(struct udpif *udpif, struct udpif_key *ukey);
+static bool ukey_install(struct udpif *udpif, struct udpif_key *ukey,
+                         bool force_replace_old_ukey);
 static void transition_ukey_at(struct udpif_key *ukey, enum ukey_state dst,
                                const char *where)
     OVS_REQUIRES(ukey->mutex);
@@ -1039,6 +1042,9 @@ classify_upcall(enum dpif_upcall_type type, const struct nlattr *userdata,
     if (cookie->type == USER_ACTION_COOKIE_SFLOW) {
         return SFLOW_UPCALL;
     } else if (cookie->type == USER_ACTION_COOKIE_SLOW_PATH) {
+        if (cookie->slow_path.reason == CHECK_PKT_LEN) {
+            return CHECK_PKT_LEN_UPCALL;
+        }
         return SLOW_PATH_UPCALL;
     } else if (cookie->type == USER_ACTION_COOKIE_FLOW_SAMPLE) {
         return FLOW_SAMPLE_UPCALL;
@@ -1111,7 +1117,8 @@ upcall_receive(struct upcall *upcall, const struct dpif_backer *backer,
     upcall->type = classify_upcall(type, userdata, &upcall->cookie);
     if (upcall->type == BAD_UPCALL) {
         return EAGAIN;
-    } else if (upcall->type == MISS_UPCALL) {
+    } else if (upcall->type == MISS_UPCALL ||
+               upcall->type == CHECK_PKT_LEN_UPCALL) {
         error = xlate_lookup(backer, flow, &upcall->ofproto, &upcall->ipfix,
                              &upcall->sflow, NULL, &upcall->ofp_in_port);
         if (error) {
@@ -1241,7 +1248,7 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
     /* This function is also called for slow-pathed flows.  As we are only
      * going to create new datapath flows for actual datapath misses, there is
      * no point in creating a ukey otherwise. */
-    if (upcall->type == MISS_UPCALL) {
+    if (upcall->type == MISS_UPCALL || upcall->type == CHECK_PKT_LEN_UPCALL) {
         upcall->ukey = ukey_create_from_upcall(upcall, wc);
     }
 }
@@ -1266,7 +1273,8 @@ upcall_uninit(struct upcall *upcall)
     }
 }
 
-/* If there are less flows than the limit, and this is a miss upcall which
+/* If there are less flows than the limit, and this is a miss upcall or
+ * check pkt len upcall which
  *
  *      - Has no recirc_id, OR
  *      - Has a recirc_id and we can get a reference on the recirc ctx,
@@ -1277,7 +1285,7 @@ should_install_flow(struct udpif *udpif, struct upcall *upcall)
 {
     unsigned int flow_limit;
 
-    if (upcall->type != MISS_UPCALL) {
+    if (upcall->type != MISS_UPCALL && upcall->type != CHECK_PKT_LEN_UPCALL) {
         return false;
     } else if (upcall->recirc && !upcall->have_recirc_ref) {
         VLOG_DBG_RL(&rl, "upcall: no reference for recirc flow");
@@ -1332,7 +1340,7 @@ upcall_cb(const struct dp_packet *packet, const struct flow *flow, ovs_u128 *ufi
         goto out;
     }
 
-    if (upcall.ukey && !ukey_install(udpif, upcall.ukey)) {
+    if (upcall.ukey && !ukey_install(udpif, upcall.ukey, false)) {
         static struct vlog_rate_limit rll = VLOG_RATE_LIMIT_INIT(1, 1);
         VLOG_WARN_RL(&rll, "upcall_cb failure: ukey installation fails");
         error = ENOSPC;
@@ -1393,6 +1401,7 @@ dpif_read_actions(struct udpif *udpif, struct upcall *upcall,
     case MISS_UPCALL:
     case SLOW_PATH_UPCALL:
     case CONTROLLER_UPCALL:
+    case CHECK_PKT_LEN_UPCALL:
     default:
         break;
     }
@@ -1411,6 +1420,7 @@ process_upcall(struct udpif *udpif, struct upcall *upcall,
     switch (upcall->type) {
     case MISS_UPCALL:
     case SLOW_PATH_UPCALL:
+    case CHECK_PKT_LEN_UPCALL:
         upcall_xlate(udpif, upcall, odp_actions, wc);
         return 0;
 
@@ -1577,8 +1587,9 @@ handle_upcalls(struct udpif *udpif, struct upcall *upcalls,
 
         if (should_install_flow(udpif, upcall)) {
             struct udpif_key *ukey = upcall->ukey;
-
-            if (ukey_install(udpif, ukey)) {
+            bool force_replace_old_ukey =
+                upcall->type == CHECK_PKT_LEN_UPCALL ? true : false;
+            if (ukey_install(udpif, ukey, force_replace_old_ukey)) {
                 upcall->ukey_persists = true;
                 put_op_init(&ops[n_ops++], ukey, DPIF_FP_CREATE);
             }
@@ -1807,14 +1818,14 @@ ukey_create_from_dpif_flow(const struct udpif *udpif,
 
 static bool
 try_ukey_replace(struct umap *umap, struct udpif_key *old_ukey,
-                 struct udpif_key *new_ukey)
+                 struct udpif_key *new_ukey, bool force_replace_old_ukey)
     OVS_REQUIRES(umap->mutex)
     OVS_TRY_LOCK(true, new_ukey->mutex)
 {
     bool replaced = false;
 
     if (!ovs_mutex_trylock(&old_ukey->mutex)) {
-        if (old_ukey->state == UKEY_EVICTED) {
+        if (old_ukey->state == UKEY_EVICTED || force_replace_old_ukey) {
             /* The flow was deleted during the current revalidator dump,
              * but its ukey won't be fully cleaned up until the sweep phase.
              * In the mean time, we are receiving upcalls for this traffic.
@@ -1843,7 +1854,8 @@ try_ukey_replace(struct umap *umap, struct udpif_key *old_ukey,
  * On success, returns true, installs the ukey and returns it in a locked
  * state. Otherwise, returns false. */
 static bool
-ukey_install__(struct udpif *udpif, struct udpif_key *new_ukey)
+ukey_install__(struct udpif *udpif, struct udpif_key *new_ukey,
+               bool force_replace_old_ukey)
     OVS_TRY_LOCK(true, new_ukey->mutex)
 {
     struct umap *umap;
@@ -1859,7 +1871,8 @@ ukey_install__(struct udpif *udpif, struct udpif_key *new_ukey)
         /* Uncommon case: A ukey is already installed with the same UFID. */
         if (old_ukey->key_len == new_ukey->key_len
             && !memcmp(old_ukey->key, new_ukey->key, new_ukey->key_len)) {
-            locked = try_ukey_replace(umap, old_ukey, new_ukey);
+            locked = try_ukey_replace(umap, old_ukey, new_ukey,
+                                      force_replace_old_ukey);
         } else {
             struct ds ds = DS_EMPTY_INITIALIZER;
 
@@ -1934,11 +1947,12 @@ transition_ukey_at(struct udpif_key *ukey, enum ukey_state dst,
 }
 
 static bool
-ukey_install(struct udpif *udpif, struct udpif_key *ukey)
+ukey_install(struct udpif *udpif, struct udpif_key *ukey,
+             bool force_replace_old_ukey)
 {
     bool installed;
 
-    installed = ukey_install__(udpif, ukey);
+    installed = ukey_install__(udpif, ukey, force_replace_old_ukey);
     if (installed) {
         ovs_mutex_unlock(&ukey->mutex);
     }
@@ -1979,7 +1993,7 @@ ukey_acquire(struct udpif *udpif, const struct dpif_flow *flow,
         if (retval) {
             goto done;
         }
-        install = ukey_install__(udpif, ukey);
+        install = ukey_install__(udpif, ukey, false);
         if (install) {
             retval = 0;
         } else {

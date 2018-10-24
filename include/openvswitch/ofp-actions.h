@@ -123,6 +123,8 @@ struct vl_mff_map;
     OFPACT(NAT,             ofpact_nat,         ofpact, "nat")          \
     OFPACT(OUTPUT_TRUNC,    ofpact_output_trunc,ofpact, "output_trunc") \
     OFPACT(CLONE,           ofpact_nest,        actions, "clone")       \
+    OFPACT(CHECK_PKT_LARGER, ofpact_check_pkt_larger, ofpact,           \
+           "check_pkt_larger")                                          \
                                                                         \
     /* Debugging actions.                                               \
      *                                                                  \
@@ -618,6 +620,15 @@ struct ofpact_meter {
         uint32_t meter_id;
         uint32_t provider_meter_id;
     );
+};
+
+/* OFPACT_CHECK_PKT_LARGER.
+ *
+ * Used for NXAST_CHECK_PKT_LARGER. */
+struct ofpact_check_pkt_larger {
+    struct ofpact ofpact;
+    uint16_t pkt_len;
+    struct mf_subfield dst;
 };
 
 /* OFPACT_WRITE_ACTIONS, OFPACT_CLONE.

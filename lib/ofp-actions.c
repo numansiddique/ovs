@@ -355,6 +355,8 @@ enum ofp_raw_action_type {
     /* NX1.3+(48): void. */
     NXAST_RAW_DEC_NSH_TTL,
 
+    /* NX1.0+(49): struct nx_action_check_pkt_larger, ... */
+    OFPAT_RAW_CHECK_PKT_LARGER,
 /* ## ------------------ ## */
 /* ## Debugging actions. ## */
 /* ## ------------------ ## */
@@ -492,6 +494,7 @@ ofpact_next_flattened(const struct ofpact *ofpact)
     case OFPACT_ENCAP:
     case OFPACT_DECAP:
     case OFPACT_DEC_NSH_TTL:
+    case OFPACT_CHECK_PKT_LARGER:
         return ofpact_next(ofpact);
 
     case OFPACT_CLONE:
@@ -7400,6 +7403,94 @@ check_WRITE_METADATA(const struct ofpact_metadata *a OVS_UNUSED,
     return 0;
 }
 
+/* Check packet length action. */
+
+struct nx_action_check_pkt_larger {
+    ovs_be16 type;              /* OFPAT_VENDOR. */
+    ovs_be16 len;               /* 24. */
+    ovs_be32 vendor;            /* NX_VENDOR_ID. */
+    ovs_be16 subtype;           /* NXAST_OUTPUT_REG. */
+    uint8_t pad[6];
+    ovs_be16 pkt_len;           /* Length of the packet to check. */
+    ovs_be16 ofs_nbits;         /* (ofs << 6) | (n_bits - 1). */
+    ovs_be32 dst;               /* Destination register. */
+};
+
+OFP_ASSERT(sizeof(struct nx_action_check_pkt_larger) == 24);
+
+static enum ofperr
+decode_OFPAT_RAW_CHECK_PKT_LARGER(
+    const struct nx_action_check_pkt_larger *ncpl,
+    enum ofp_version ofp_version OVS_UNUSED, struct ofpbuf *out)
+{
+    struct ofpact_check_pkt_larger *check_pkt_larger =
+        ofpact_put_CHECK_PKT_LARGER(out);
+    check_pkt_larger->pkt_len = ntohs(ncpl->pkt_len);
+    const struct mf_field *mf = mf_from_nxm_header(ntohl(ncpl->dst), NULL);
+    check_pkt_larger->dst.field = mf;
+    check_pkt_larger->dst.ofs = nxm_decode_ofs(ncpl->ofs_nbits);
+    check_pkt_larger->dst.n_bits = nxm_decode_n_bits(ncpl->ofs_nbits);;
+    return 0;
+}
+
+static void
+encode_CHECK_PKT_LARGER(const struct ofpact_check_pkt_larger *check_pkt_larger,
+                 enum ofp_version ofp_version OVS_UNUSED,
+                 struct ofpbuf *out OVS_UNUSED)
+{
+    struct nx_action_check_pkt_larger *ncpl = put_OFPAT_CHECK_PKT_LARGER(out);
+    ncpl->pkt_len = htons(check_pkt_larger->pkt_len);
+    ncpl->ofs_nbits = nxm_encode_ofs_nbits(
+        check_pkt_larger->dst.ofs, check_pkt_larger->dst.n_bits);
+    if (check_pkt_larger->dst.field) {
+        ncpl->dst = htonl(nxm_header_from_mff(check_pkt_larger->dst.field));
+    }
+}
+
+static char * OVS_WARN_UNUSED_RESULT
+parse_CHECK_PKT_LARGER(char *arg, const struct ofpact_parse_params *pp)
+{
+    char *value;
+    char *delim;
+    char *key;
+    char *error = set_field_split_str(arg, &key, &value, &delim);
+    if (error) {
+        return error;
+    }
+    delim[0] = '\0';
+    struct mf_subfield dst;
+    error = mf_parse_subfield(&dst, key);
+    if (error) {
+        return error;
+    }
+
+    struct ofpact_check_pkt_larger *check_pkt_larger =
+        ofpact_put_CHECK_PKT_LARGER(pp->ofpacts);
+    error = str_to_u16(value, NULL, &check_pkt_larger->pkt_len);
+    if (error) {
+        return error;
+    }
+    check_pkt_larger->dst = dst;
+    return NULL;
+}
+
+static void
+format_CHECK_PKT_LARGER(const struct ofpact_check_pkt_larger *a,
+                        const struct ofpact_format_params *fp)
+{
+    ds_put_format(fp->s, "%scheck_pkt_larger:%s%"PRIu32"->",
+                  colors.param, colors.end, a->pkt_len);
+    mf_format_subfield(&a->dst, fp->s);
+}
+
+static enum ofperr
+check_CHECK_PKT_LARGER(const struct ofpact_check_pkt_larger *a OVS_UNUSED,
+                       const struct ofpact_check_params *cp OVS_UNUSED)
+{
+    return 0;
+}
+
+
 /* Goto-Table instruction. */
 
 static void
@@ -7686,6 +7777,7 @@ action_set_classify(const struct ofpact *a)
     case OFPACT_WRITE_METADATA:
     case OFPACT_DEBUG_RECIRC:
     case OFPACT_DEBUG_SLOW:
+    case OFPACT_CHECK_PKT_LARGER:
         return ACTION_SLOT_INVALID;
 
     default:
@@ -7885,6 +7977,7 @@ ovs_instruction_type_from_ofpact_type(enum ofpact_type type)
     case OFPACT_ENCAP:
     case OFPACT_DECAP:
     case OFPACT_DEC_NSH_TTL:
+    case OFPACT_CHECK_PKT_LARGER:
     default:
         return OVSINST_OFPIT11_APPLY_ACTIONS;
     }
@@ -8755,6 +8848,7 @@ ofpact_outputs_to_port(const struct ofpact *ofpact, ofp_port_t port)
     case OFPACT_ENCAP:
     case OFPACT_DECAP:
     case OFPACT_DEC_NSH_TTL:
+    case OFPACT_CHECK_PKT_LARGER:
     default:
         return false;
     }
@@ -8991,7 +9085,6 @@ ofpacts_parse__(char *str, const struct ofpact_parse_params *pp,
         enum ofpact_type type;
         char *error = NULL;
         ofp_port_t port;
-
         if (ofpact_type_from_name(key, &type)) {
             error = ofpact_parse(type, value, pp);
             inst = ovs_instruction_type_from_ofpact_type(type);
