@@ -495,4 +495,5 @@ lflow_destroy(void)
 {
     expr_symtab_destroy(&symtab);
     shash_destroy(&symtab);
+    ovn_destroy_ovnfields();
 }

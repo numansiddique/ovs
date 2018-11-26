@@ -35,8 +35,8 @@
 #include "ovn/actions.h"
 #include "ovn/expr.h"
 #include "ovn/lex.h"
+#include "ovn/logical-fields.h"
 #include "ovn/lib/acl-log.h"
-#include "ovn/lib/logical-fields.h"
 #include "ovn/lib/ovn-l7.h"
 #include "ovn/lib/ovn-sb-idl.h"
 #include "ovn/lib/ovn-util.h"
@@ -2105,6 +2105,9 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
         case OVNACT_TCP_RESET:
             execute_tcp_reset(ovnact_get_TCP_RESET(a), dp, uflow, table_id,
                               pipeline, super);
+            break;
+
+        case OVNACT_OVNFIELD_LOAD:
             break;
         }
 
