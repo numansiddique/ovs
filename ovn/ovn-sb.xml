@@ -1843,6 +1843,17 @@
             <li><code>icmp4.code = 1</code> (host unreachable)</li>
           </ul>
 
+          <p>
+            This action also allows setting the fragmentation mtu in the
+            ICMPv4 packet header as per RFC 1191. To set this
+            <code>icmp4.frag_mtu</code> field can be used.
+          </p>
+
+          <ul>
+            <li><code>icmp4.type = 3</code> (destination unreachable)</li>
+            <li><code>icmp4.code = 4</code> (Fragmentation Needed)</li>
+            <li><code>icmp4.frag_mtu = 1500</code></li>
+          </ul>
           <p><b>Prerequisite:</b> <code>ip4</code></p>
         </dd>
 

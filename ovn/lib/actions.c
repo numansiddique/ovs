@@ -23,7 +23,6 @@
 #include "ovn-l7.h"
 #include "hash.h"
 #include "lib/packets.h"
-#include "logical-fields.h"
 #include "nx-match.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/hmap.h"
@@ -194,6 +193,7 @@ struct action_context {
     struct ofpbuf *ovnacts;     /* Actions. */
     struct expr *prereqs;       /* Prerequisites to apply to match. */
     int depth;                  /* Current nested action depth. */
+    struct ofpbuf *ovnfield_acts; /* Actions for OVN fields. */
 };
 
 static void parse_actions(struct action_context *, enum lex_type sentinel);
@@ -366,19 +366,33 @@ ovnact_next_free(struct ovnact_next *a OVS_UNUSED)
 static void
 parse_LOAD(struct action_context *ctx, const struct expr_field *lhs)
 {
-    size_t ofs = ctx->ovnacts->size;
-    struct ovnact_load *load = ovnact_put_LOAD(ctx->ovnacts);
+    struct ofpbuf *ovnacts = ctx->ovnacts;
+    size_t ofs = ovnacts->size;
+    struct ovnact_load *load;
+    if (lhs->symbol->ovn_field) {
+        if (!ctx->ovnfield_acts) {
+            lexer_syntax_error(ctx->lexer,
+                               "Invalid usage of OVN field : %s",
+                               lhs->symbol->name);
+            return;
+        }
+        ovnacts = ctx->ovnfield_acts;
+        load = ovnact_put_OVNFIELD_LOAD(ovnacts);
+    } else {
+        load = ovnact_put_LOAD(ovnacts);
+    }
+
     load->dst = *lhs;
 
     char *error = expr_type_check(lhs, lhs->n_bits, true);
     if (error) {
-        ctx->ovnacts->size = ofs;
+        ovnacts->size = ofs;
         lexer_error(ctx->lexer, "%s", error);
         free(error);
         return;
     }
     if (!expr_constant_parse(ctx->lexer, lhs, &load->imm)) {
-        ctx->ovnacts->size = ofs;
+        ovnacts->size = ofs;
         return;
     }
 }
@@ -1089,7 +1103,7 @@ encode_CT_CLEAR(const struct ovnact_null *null OVS_UNUSED,
  * actions on a packet derived from the one being processed. */
 static void
 parse_nested_action(struct action_context *ctx, enum ovnact_type type,
-                    const char *prereq)
+                    const char *prereq, bool parse_ovn_fields)
 {
     if (!lexer_force_match(ctx->lexer, LEX_T_LCURLY)) {
         return;
@@ -1102,14 +1116,19 @@ parse_nested_action(struct action_context *ctx, enum ovnact_type type,
 
     uint64_t stub[1024 / 8];
     struct ofpbuf nested = OFPBUF_STUB_INITIALIZER(stub);
-
+    uint64_t ovnfields_stub[512 / 8];
+    struct ofpbuf nested_ovnfields = OFPBUF_STUB_INITIALIZER(ovnfields_stub);
     struct action_context inner_ctx = {
         .pp = ctx->pp,
         .lexer = ctx->lexer,
         .ovnacts = &nested,
         .prereqs = NULL,
         .depth = ctx->depth + 1,
+        .ovnfield_acts = NULL,
     };
+    if (parse_ovn_fields) {
+        inner_ctx.ovnfield_acts = &nested_ovnfields;
+    }
     parse_actions(&inner_ctx, LEX_T_RCURLY);
 
     if (prereq) {
@@ -1134,61 +1153,68 @@ parse_nested_action(struct action_context *ctx, enum ovnact_type type,
                                         OVNACT_ALIGN(sizeof *on));
     on->nested_len = nested.size;
     on->nested = ofpbuf_steal_data(&nested);
+    on->nested_ovnfields_len = nested_ovnfields.size;
+    if (parse_ovn_fields && on->nested_ovnfields_len) {
+        on->nested_ovnfields = ofpbuf_steal_data(&nested_ovnfields);
+    }
 }
 
 static void
 parse_ARP(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_ARP, "ip4");
+    parse_nested_action(ctx, OVNACT_ARP, "ip4", false);
 }
 
 static void
 parse_ICMP4(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_ICMP4, "ip4");
+    parse_nested_action(ctx, OVNACT_ICMP4, "ip4", true);
 }
 
 static void
 parse_ICMP6(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_ICMP6, "ip6");
+    parse_nested_action(ctx, OVNACT_ICMP6, "ip6", false);
 }
 
 static void
 parse_TCP_RESET(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_TCP_RESET, "tcp");
+    parse_nested_action(ctx, OVNACT_TCP_RESET, "tcp", false);
 }
 
 static void
 parse_ND_NA(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_ND_NA, "nd_ns");
+    parse_nested_action(ctx, OVNACT_ND_NA, "nd_ns", false);
 }
 
 static void
 parse_ND_NA_ROUTER(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_ND_NA_ROUTER, "nd_ns");
+    parse_nested_action(ctx, OVNACT_ND_NA_ROUTER, "nd_ns", false);
 }
 
 static void
 parse_ND_NS(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_ND_NS, "ip6");
+    parse_nested_action(ctx, OVNACT_ND_NS, "ip6", false);
 }
 
 static void
 parse_CLONE(struct action_context *ctx)
 {
-    parse_nested_action(ctx, OVNACT_CLONE, NULL);
+    parse_nested_action(ctx, OVNACT_CLONE, NULL, false);
 }
 
 static void
 format_nested_action(const struct ovnact_nest *on, const char *name,
-                     struct ds *s)
+                     struct ds *s, bool format_ovn_fields)
 {
     ds_put_format(s, "%s { ", name);
+    if (format_ovn_fields && on->nested_ovnfields_len) {
+        ovnacts_format(on->nested_ovnfields, on->nested_ovnfields_len, s);
+    }
     ovnacts_format(on->nested, on->nested_len, s);
     ds_put_format(s, " };");
 }
@@ -1196,56 +1222,57 @@ format_nested_action(const struct ovnact_nest *on, const char *name,
 static void
 format_ARP(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "arp", s);
+    format_nested_action(nest, "arp", s, false);
 }
 
 static void
 format_ICMP4(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "icmp4", s);
+    format_nested_action(nest, "icmp4", s, true);
 }
 
 static void
 format_ICMP6(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "icmp6", s);
+    format_nested_action(nest, "icmp6", s, false);
 }
 
 static void
 format_TCP_RESET(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "tcp_reset", s);
+    format_nested_action(nest, "tcp_reset", s, false);
 }
 
 static void
 format_ND_NA(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "nd_na", s);
+    format_nested_action(nest, "nd_na", s, false);
 }
 
 static void
 format_ND_NA_ROUTER(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "nd_na_router", s);
+    format_nested_action(nest, "nd_na_router", s, false);
 }
 
 static void
 format_ND_NS(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "nd_ns", s);
+    format_nested_action(nest, "nd_ns", s, false);
 }
 
 static void
 format_CLONE(const struct ovnact_nest *nest, struct ds *s)
 {
-    format_nested_action(nest, "clone", s);
+    format_nested_action(nest, "clone", s, false);
 }
 
 static void
 encode_nested_actions(const struct ovnact_nest *on,
                       const struct ovnact_encode_params *ep,
                       enum action_opcode opcode,
-                      struct ofpbuf *ofpacts)
+                      struct ofpbuf *ofpacts,
+                      bool encode_ovn_fields)
 {
     /* Convert nested actions into ofpacts. */
     uint64_t inner_ofpacts_stub[1024 / 8];
@@ -1258,6 +1285,19 @@ encode_nested_actions(const struct ovnact_nest *on,
      * switch inside an OFPT_PACKET_OUT message. */
     size_t oc_offset = encode_start_controller_op(opcode, false,
                                                   NX_CTLR_NO_METER, ofpacts);
+    if (encode_ovn_fields) {
+        uint64_t ovn_fields_stub[128 / 8];
+        struct ofpbuf ovn_fields_ofpacts =
+            OFPBUF_STUB_INITIALIZER(ovn_fields_stub);
+
+        ovnacts_encode(on->nested_ovnfields, on->nested_ovnfields_len,
+                       ep, &ovn_fields_ofpacts);
+        uint8_t *n_ovnfields_acts = ofpbuf_put_zeros(ofpacts, 1);
+        *n_ovnfields_acts = ovnacts_count(on->nested_ovnfields,
+                                          on->nested_ovnfields_len);
+        ofpbuf_put(ofpacts, ovn_fields_ofpacts.data, ovn_fields_ofpacts.size);
+        ofpbuf_uninit(&ovn_fields_ofpacts);
+    }
     ofpacts_put_openflow_actions(inner_ofpacts.data, inner_ofpacts.size,
                                  ofpacts, OFP13_VERSION);
     encode_finish_controller_op(oc_offset, ofpacts);
@@ -1271,7 +1311,7 @@ encode_ARP(const struct ovnact_nest *on,
            const struct ovnact_encode_params *ep,
            struct ofpbuf *ofpacts)
 {
-    encode_nested_actions(on, ep, ACTION_OPCODE_ARP, ofpacts);
+    encode_nested_actions(on, ep, ACTION_OPCODE_ARP, ofpacts, false);
 }
 
 static void
@@ -1279,7 +1319,7 @@ encode_ICMP4(const struct ovnact_nest *on,
              const struct ovnact_encode_params *ep,
              struct ofpbuf *ofpacts)
 {
-    encode_nested_actions(on, ep, ACTION_OPCODE_ICMP, ofpacts);
+    encode_nested_actions(on, ep, ACTION_OPCODE_ICMP, ofpacts, true);
 }
 
 static void
@@ -1287,7 +1327,7 @@ encode_ICMP6(const struct ovnact_nest *on,
              const struct ovnact_encode_params *ep,
              struct ofpbuf *ofpacts)
 {
-    encode_nested_actions(on, ep, ACTION_OPCODE_ICMP, ofpacts);
+    encode_nested_actions(on, ep, ACTION_OPCODE_ICMP, ofpacts, false);
 }
 
 static void
@@ -1295,7 +1335,7 @@ encode_TCP_RESET(const struct ovnact_nest *on,
                  const struct ovnact_encode_params *ep,
                  struct ofpbuf *ofpacts)
 {
-    encode_nested_actions(on, ep, ACTION_OPCODE_TCP_RESET, ofpacts);
+    encode_nested_actions(on, ep, ACTION_OPCODE_TCP_RESET, ofpacts, false);
 }
 
 static void
@@ -1303,7 +1343,7 @@ encode_ND_NA(const struct ovnact_nest *on,
              const struct ovnact_encode_params *ep,
              struct ofpbuf *ofpacts)
 {
-    encode_nested_actions(on, ep, ACTION_OPCODE_ND_NA, ofpacts);
+    encode_nested_actions(on, ep, ACTION_OPCODE_ND_NA, ofpacts, false);
 }
 
 static void
@@ -1311,7 +1351,8 @@ encode_ND_NA_ROUTER(const struct ovnact_nest *on,
              const struct ovnact_encode_params *ep,
              struct ofpbuf *ofpacts)
 {
-    encode_nested_actions(on, ep, ACTION_OPCODE_ND_NA_ROUTER, ofpacts);
+    encode_nested_actions(on, ep, ACTION_OPCODE_ND_NA_ROUTER, ofpacts,
+                          false);
 }
 
 static void
@@ -1319,7 +1360,7 @@ encode_ND_NS(const struct ovnact_nest *on,
              const struct ovnact_encode_params *ep,
              struct ofpbuf *ofpacts)
 {
-    encode_nested_actions(on, ep, ACTION_OPCODE_ND_NS, ofpacts);
+    encode_nested_actions(on, ep, ACTION_OPCODE_ND_NS, ofpacts, false);
 }
 
 static void
@@ -2293,6 +2334,42 @@ encode_SET_METER(const struct ovnact_set_meter *cl,
 static void
 ovnact_set_meter_free(struct ovnact_set_meter *ct OVS_UNUSED)
 {
+}
+
+static void
+format_OVNFIELD_LOAD(const struct ovnact_load *load , struct ds *s)
+{
+    const struct ovn_field *f = ovn_field_from_name(load->dst.symbol->name);
+    switch (f->id) {
+    case OVN_ICMP4_FRAG_MTU:
+        ds_put_format(s, "%s = %u; ", f->name,
+                      ntohs(load->imm.value.be16_int));
+        break;
+
+    case OVN_FIELD_N_IDS:
+    default:
+        OVS_NOT_REACHED();
+    }
+}
+
+static void
+encode_OVNFIELD_LOAD(const struct ovnact_load *load,
+            const struct ovnact_encode_params *ep OVS_UNUSED,
+            struct ofpbuf *ofpacts)
+{
+    const struct ovn_field *f = ovn_field_from_name(load->dst.symbol->name);
+    struct ovnfield_act_header *oah = ofpbuf_put_zeros(ofpacts, sizeof *oah);
+    oah->id = htons(f->id);
+    switch (f->id) {
+    case OVN_ICMP4_FRAG_MTU:
+        oah->len = htons(sizeof(ovs_be16));
+        ofpbuf_put(ofpacts, &load->imm.value.be16_int, sizeof(ovs_be16));
+        break;
+
+    case OVN_FIELD_N_IDS:
+    default:
+        OVS_NOT_REACHED();
+    }
 }
 
 /* Parses an assignment or exchange or put_dhcp_opts action. */
