@@ -42,9 +42,9 @@
 #include "ovn/actions.h"
 #include "ovn/lex.h"
 #include "ovn/lib/acl-log.h"
-#include "ovn/lib/logical-fields.h"
 #include "ovn/lib/ovn-l7.h"
 #include "ovn/lib/ovn-util.h"
+#include "ovn/logical-fields.h"
 #include "openvswitch/poll-loop.h"
 #include "openvswitch/rconn.h"
 #include "socket-util.h"
@@ -450,6 +450,27 @@ pinctrl_handle_icmp(const struct flow *ip_flow, struct dp_packet *pkt_in,
         struct icmp_header *ih = dp_packet_put_zeros(&packet, sizeof *ih);
         dp_packet_set_l4(&packet, ih);
         packet_set_icmp(&packet, ICMP4_DST_UNREACH, 1);
+        uint8_t *n_ovnfield_acts = ofpbuf_try_pull(userdata,
+                                                   sizeof *n_ovnfield_acts);
+        if (n_ovnfield_acts && *n_ovnfield_acts) {
+            for (uint8_t i = 0; i < *n_ovnfield_acts; i++) {
+                 struct ovnfield_act_header *oah =
+                     ofpbuf_try_pull(userdata, sizeof *oah);
+
+                 if (!oah) {
+                    break;
+                 }
+                 switch (ntohs(oah->id)) {
+                 case OVN_ICMP4_FRAG_MTU: {
+                     ovs_be16 *mtu = ofpbuf_try_pull(userdata, sizeof *mtu);
+                     if (mtu) {
+                         ih->icmp_fields.frag.mtu = *mtu;
+                     }
+                     break;
+                 }
+                 }
+            }
+        }
     } else {
         struct ip6_hdr *nh = dp_packet_put_zeros(&packet, sizeof *nh);
         struct icmp6_error_header *ih;
