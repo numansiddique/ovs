@@ -36,6 +36,7 @@
 #include "memory.h"
 #include "netdev.h"
 #include "openflow/openflow.h"
+#include "ovs-thread.h"
 #include "ovsdb-idl.h"
 #include "openvswitch/poll-loop.h"
 #include "simap.h"
@@ -76,6 +77,7 @@ main(int argc, char *argv[])
     int retval;
 
     set_program_name(argv[0]);
+    ovsthread_id_init();
 
     ovs_cmdl_proctitle_init(argc, argv);
     service_start(&argc, &argv);
