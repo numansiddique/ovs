@@ -291,7 +291,7 @@ buffered_send_packets(struct buffered_packets *bp, struct eth_addr *addr)
     }
 }
 
-#define BUFFER_MAP_TIMEOUT   30000
+#define BUFFER_MAP_TIMEOUT   10000
 static void
 buffered_packets_map_gc(void)
 {
