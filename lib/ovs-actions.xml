@@ -1453,6 +1453,37 @@ $ ovs-ofctl -O OpenFlow10 add-flow br0 actions=mod_nw_src:1.2.3.4
         </p>        
       </conformance>
     </action>
+
+    <action name="CHECK_PKT_LARGER">
+      <h2>The <code>check_pkt_larger</code> action</h2>
+      <syntax>
+        <code>check_pkt_larger(<var>pkt_len</var>)-&gt;<var>dst</var></code>
+      </syntax>
+
+      <p>
+        Checks if the packet is larger than the specified length in
+        <var>pkt_len</var> and stores the result <code>1</code> in the
+        OpenFlow register field 1-bit specified in <var>dst</var>.
+      </p>
+
+      <p>
+        Examples:
+      </p>
+
+      <ul>
+        <li>
+          <code>check_pkt_larger(1500)-&gt;reg0[0]</code>
+        </li>
+
+        <li>
+          <code>check_pkt_larger(8000)-&gt;reg9[10]</code>
+        </li>
+      </ul>
+
+      <p>
+        This action was added in Open vSwitch 2.11.90.
+      </p>
+    </action>
   </group>
 
   <group title="Metadata Actions">
