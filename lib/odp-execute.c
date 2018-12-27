@@ -673,6 +673,7 @@ requires_datapath_assistance(const struct nlattr *a)
     case OVS_ACTION_ATTR_PUSH_NSH:
     case OVS_ACTION_ATTR_POP_NSH:
     case OVS_ACTION_ATTR_CT_CLEAR:
+    case OVS_ACTION_ATTR_CHECK_PKT_LEN:
         return false;
 
     case OVS_ACTION_ATTR_UNSPEC:
@@ -900,6 +901,9 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
             }
             break;
 
+        case OVS_ACTION_ATTR_CHECK_PKT_LEN: {
+            break;
+        }
         case OVS_ACTION_ATTR_OUTPUT:
         case OVS_ACTION_ATTR_TUNNEL_PUSH:
         case OVS_ACTION_ATTR_TUNNEL_POP:

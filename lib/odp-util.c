@@ -131,6 +131,7 @@ odp_action_len(uint16_t type)
     case OVS_ACTION_ATTR_CLONE: return ATTR_LEN_VARIABLE;
     case OVS_ACTION_ATTR_PUSH_NSH: return ATTR_LEN_VARIABLE;
     case OVS_ACTION_ATTR_POP_NSH: return 0;
+    case OVS_ACTION_ATTR_CHECK_PKT_LEN: return ATTR_LEN_VARIABLE;
 
     case OVS_ACTION_ATTR_UNSPEC:
     case __OVS_ACTION_ATTR_MAX:
@@ -1042,6 +1043,38 @@ format_odp_set_nsh(struct ds *ds, const struct nlattr *attr)
     ds_put_cstr(ds, "))");
 }
 
+static void
+format_odp_check_pkt_len_action(struct ds *ds, const struct nlattr *attr,
+                                const struct hmap *portno_names OVS_UNUSED)
+{
+    static const struct nl_policy ovs_cpl_policy[] = {
+        [OVS_CHECK_PKT_LEN_ATTR_PKT_LEN] = { .type = NL_A_U16 },
+    };
+    struct nlattr *a[ARRAY_SIZE(ovs_cpl_policy)];
+    ds_put_cstr(ds, "check_pkt_len");
+    if (!nl_parse_nested(attr, ovs_cpl_policy, a, ARRAY_SIZE(a))) {
+        ds_put_cstr(ds, "(error)");
+        return;
+    }
+
+    uint16_t pkt_len = nl_attr_get_u16(a[OVS_CHECK_PKT_LEN_ATTR_PKT_LEN]);
+    ds_put_format(ds, "(> %u ? (", pkt_len);
+    const struct nlattr *acts;
+    acts = nl_attr_find_nested(attr,
+                               OVS_CHECK_PKT_LEN_ATTR_ACTIONS_IF_GREATER);
+    if (acts) {
+        format_odp_actions(ds, nl_attr_get(acts), nl_attr_get_size(acts),
+                           portno_names);
+    }
+    ds_put_cstr(ds, ") : (");
+    acts = nl_attr_find_nested(attr,
+                               OVS_CHECK_PKT_LEN_ATTR_ACTIONS_IF_LESS_EQUAL);
+    if (acts) {
+        format_odp_actions(ds, nl_attr_get(acts), nl_attr_get_size(acts),
+                           portno_names);
+    }
+    ds_put_cstr(ds, "))");
+}
 
 static void
 format_odp_action(struct ds *ds, const struct nlattr *a,
@@ -1180,6 +1213,9 @@ format_odp_action(struct ds *ds, const struct nlattr *a,
     }
     case OVS_ACTION_ATTR_POP_NSH:
         ds_put_cstr(ds, "pop_nsh()");
+        break;
+    case OVS_ACTION_ATTR_CHECK_PKT_LEN:
+        format_odp_check_pkt_len_action(ds, a, portno_names);
         break;
     case OVS_ACTION_ATTR_UNSPEC:
     case __OVS_ACTION_ATTR_MAX:
