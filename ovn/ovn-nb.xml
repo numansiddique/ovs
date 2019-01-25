@@ -931,6 +931,9 @@
         </p>
       </column>
     </group>
+
+    <column name="ha_chassis_group">
+    </column>
   </table>
 
   <table name="Address_Set" title="Address Sets">
@@ -1547,6 +1550,9 @@
         The <ref column="priority" table="Gateway_Chassis"/> column
         specifies the order that gateways will be chosen by OVN.
       </p>
+    </column>
+
+    <column name="ha_chassis_group">
     </column>
 
     <column name="networks">
@@ -2605,4 +2611,43 @@
     </group>
   </table>
 
+  <table name="HA_Chassis">
+    <column name="chassis_name">
+      <p>
+        Name of the chassis that we want to redirect traffic through for the
+        associated logical router port.  The value must match the
+        <ref db="OVN_Southbound" table="Chassis" column="name"/> column
+        of the <ref db="OVN_Southbound" table="Chassis"/> table in the
+        <ref db="OVN_Southbound"/> database.
+      </p>
+    </column>
+
+    <column name="priority">
+      <p>
+        This is the priority of a chassis among all
+        <ref table="HA_Chassis"/> belonging to the same logical router
+        port.
+      </p>
+    </column>
+
+    <group title="Common Columns">
+      <column name="external_ids">
+        See <em>External IDs</em> at the beginning of this document.
+      </column>
+    </group>
+  </table>
+
+  <table name="HA_Chassis_Group">
+    <column name="name">
+    </column>
+
+    <column name="ha_chassis">
+    </column>
+
+    <group title="Common Columns">
+      <column name="external_ids">
+        See <em>External IDs</em> at the beginning of this document.
+      </column>
+    </group>
+  </table>
 </database>
