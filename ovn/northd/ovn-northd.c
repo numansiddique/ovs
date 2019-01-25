@@ -56,6 +56,7 @@ struct northd_context {
     struct ovsdb_idl *ovnsb_idl;
     struct ovsdb_idl_txn *ovnnb_txn;
     struct ovsdb_idl_txn *ovnsb_txn;
+    struct ovsdb_idl_index *sbrec_chassis_by_name;
     struct ovsdb_idl_index *sbrec_ha_chassis_grp_by_name;
 };
 
@@ -2070,6 +2071,17 @@ sbpb_gw_chassis_needs_update(
     return false;
 }
 
+static struct sbrec_ha_chassis *
+create_sb_ha_chassis(struct northd_context *ctx,
+                     const struct sbrec_chassis *chassis, int priority)
+{
+    struct sbrec_ha_chassis *sb_ha_chassis =
+        sbrec_ha_chassis_insert(ctx->ovnsb_txn);
+    sbrec_ha_chassis_set_chassis(sb_ha_chassis, chassis);
+    sbrec_ha_chassis_set_priority(sb_ha_chassis, priority);
+    return sb_ha_chassis;
+}
+
 /* This functions translates the gw chassis on the nb database
  * to sb database entries, the only difference is that SB database
  * Gateway_Chassis table references the chassis directly instead
@@ -2138,10 +2150,7 @@ copy_gw_chassis_from_nbrp_to_sbpb(
 
         if (chassis) {
             sb_ha_chassis[n_sb_ha_ch] =
-                sbrec_ha_chassis_insert(ctx->ovnsb_txn);
-            sbrec_ha_chassis_set_chassis(sb_ha_chassis[n_sb_ha_ch], chassis);
-            sbrec_ha_chassis_set_priority(sb_ha_chassis[n_sb_ha_ch],
-                                          lrp_gwc->priority);
+                create_sb_ha_chassis(ctx, chassis, lrp_gwc->priority);
             n_sb_ha_ch++;
         }
     }
@@ -2231,6 +2240,30 @@ ovn_port_update_sbrec(struct northd_context *ctx,
                                 &op->nbrp->external_ids);
                         sbrec_port_binding_set_gateway_chassis(op->sb,
                                                                &gw_chassis, 1);
+
+                        const struct sbrec_ha_chassis_group *sb_ha_ch_grp;
+                        sb_ha_ch_grp = ha_chassis_group_lookup_by_name(
+                            ctx->sbrec_ha_chassis_grp_by_name, gwc_name);
+                        if (!sb_ha_ch_grp) {
+                            sb_ha_ch_grp =
+                                sbrec_ha_chassis_group_insert(ctx->ovnsb_txn);
+                            sbrec_ha_chassis_group_set_name(sb_ha_ch_grp,
+                                                            gwc_name);
+                        }
+
+                        struct sbrec_ha_chassis **sb_ha_ch =
+                            xcalloc(1, sizeof *sb_ha_ch);
+                        sb_ha_ch[0] = create_sb_ha_chassis(ctx, chassis, 0);
+                        sbrec_ha_chassis_group_set_ha_chassis(sb_ha_ch_grp,
+                                                              sb_ha_ch, 1);
+                        struct smap ext_ids = SMAP_CONST1(&ext_ids,
+                                                          "legacy-gateway",
+                                                          "true");
+                        sbrec_ha_chassis_group_set_external_ids(sb_ha_ch_grp,
+                                                                &ext_ids);
+                        sbrec_port_binding_set_ha_chassis_group(op->sb,
+                                                                sb_ha_ch_grp);
+                        free(sb_ha_ch);
                         free(gwc_name);
                     }
                 } else {
@@ -7475,13 +7508,111 @@ ovnnb_db_run(struct northd_context *ctx,
     cleanup_macam(&macam);
 }
 
+struct ha_ref_chassis_info {
+    const struct sbrec_ha_chassis_group *ha_chassis_group;
+    struct sbrec_chassis **ref_chassis;
+    size_t n_ref_chassis;
+};
+
+static void
+build_ha_chassis_group_ref_chassis(struct northd_context *ctx,
+                                   const struct sbrec_port_binding *sb,
+                                   struct ovn_port *op,
+                                   struct shash *ha_ref_chassis_map)
+{
+    for (size_t i = 0; i < op->od->n_router_ports; i++) {
+        if (!op->od->router_ports[i]->peer) {
+            continue;
+        }
+
+        struct ovn_datapath *router_dp = op->od->router_ports[i]->peer->od;
+        if (!router_dp->l3dgw_port || !router_dp->l3dgw_port->nbrp) {
+            continue;
+        }
+
+        /* Get the HA Chassis group associated with the lrp. */
+        struct nbrec_ha_chassis_group *nb_chassis_grp =
+            router_dp->l3dgw_port->nbrp->ha_chassis_group;
+        const struct sbrec_ha_chassis_group *sb_ha_chassis_grp = NULL;
+        if (!nb_chassis_grp) {
+            /* Check if the legacy gateway chassis is used. */
+            if (router_dp->l3redirect_port && router_dp->l3redirect_port->sb) {
+                sb_ha_chassis_grp =
+                    router_dp->l3redirect_port->sb->ha_chassis_group;
+            }
+
+            if (!sb_ha_chassis_grp) {
+                continue;
+            }
+        } else {
+            /* Get the HA chassis group row in the SB DB. */
+            sb_ha_chassis_grp = ha_chassis_group_lookup_by_name(
+                ctx->sbrec_ha_chassis_grp_by_name, nb_chassis_grp->name);
+        }
+
+        if (!sb_ha_chassis_grp) {
+            continue;
+        }
+
+        struct ha_ref_chassis_info *ref_ch_info =
+            shash_find_data(ha_ref_chassis_map, sb_ha_chassis_grp->name);
+        if (!ref_ch_info) {
+            /* This cannot happen. */
+            continue;
+        }
+
+        bool present = false;
+        for (size_t j = 0; j < ref_ch_info->n_ref_chassis; j++) {
+            if (sb->chassis == ref_ch_info->ref_chassis[j]) {
+                present = true;
+                break;
+            }
+        }
+
+        if (!present) {
+            ref_ch_info->ref_chassis = xrealloc(
+                ref_ch_info->ref_chassis,
+                sizeof *ref_ch_info->ref_chassis *
+                (++ref_ch_info->n_ref_chassis));
+            ref_ch_info->ref_chassis[ref_ch_info->n_ref_chassis -1] =
+                sb->chassis;
+        }
+    }
+}
+
+static void
+update_sb_ha_group_ref_chassis(struct shash *ha_ref_chassis_map)
+{
+    struct shash_node *node, *next;
+    SHASH_FOR_EACH_SAFE (node, next, ha_ref_chassis_map) {
+        struct ha_ref_chassis_info *ha_ref_info = node->data;
+        sbrec_ha_chassis_group_set_ref_chassis(ha_ref_info->ha_chassis_group,
+                                               ha_ref_info->ref_chassis,
+                                               ha_ref_info->n_ref_chassis);
+        free(ha_ref_info->ref_chassis);
+        free(ha_ref_info);
+        shash_delete(ha_ref_chassis_map, node);
+    }
+}
+
 /* Handle changes to the 'chassis' column of the 'Port_Binding' table.  When
  * this column is not empty, it means we need to set the corresponding logical
  * port as 'up' in the northbound DB. */
 static void
-update_logical_port_status(struct northd_context *ctx, struct hmap *ports)
+handle_port_binding_changes(struct northd_context *ctx, struct hmap *ports,
+                            struct shash *ha_ref_chassis_map)
 {
     const struct sbrec_port_binding *sb;
+
+    if (ctx->ovnsb_txn) {
+        const struct sbrec_ha_chassis_group *ha_ch_grp;
+        SBREC_HA_CHASSIS_GROUP_FOR_EACH (ha_ch_grp, ctx->ovnsb_idl) {
+            struct ha_ref_chassis_info *ref_ch_info =
+                xzalloc(sizeof *ref_ch_info);
+            ref_ch_info->ha_chassis_group = ha_ch_grp;
+            shash_add(ha_ref_chassis_map, ha_ch_grp->name, ref_ch_info);
+        }
+    }
 
     SBREC_PORT_BINDING_FOR_EACH(sb, ctx->ovnsb_idl) {
         struct ovn_port *op = ovn_port_find(ports, sb->logical_port);
@@ -7496,6 +7627,12 @@ update_logical_port_status(struct northd_context *ctx, struct hmap *ports)
         bool up = (sb->chassis || !strcmp(op->nbsp->type, "router"));
         if (!op->nbsp->up || *op->nbsp->up != up) {
             nbrec_logical_switch_port_set_up(op->nbsp, &up, 1);
+        }
+
+        if (ctx->ovnsb_txn && !strcmp(sb->type, "") &&
+            op->od->n_router_ports && sb->chassis) {
+            build_ha_chassis_group_ref_chassis(ctx, sb, op,
+                                               ha_ref_chassis_map);
         }
     }
 }
@@ -7824,8 +7961,13 @@ ovnsb_db_run(struct northd_context *ctx, struct ovsdb_idl_loop *sb_loop,
         return;
     }
 
-    update_logical_port_status(ctx, ports);
+    struct shash ha_ref_chassis_map = SHASH_INITIALIZER(&ha_ref_chassis_map);
+    handle_port_binding_changes(ctx, ports, &ha_ref_chassis_map);
     update_northbound_cfg(ctx, sb_loop);
+    if (ctx->ovnsb_txn) {
+        update_sb_ha_group_ref_chassis(&ha_ref_chassis_map);
+    }
+    shash_destroy(&ha_ref_chassis_map);
 }
 
 static void
@@ -8084,6 +8226,8 @@ main(int argc, char *argv[])
     add_column_noalert(ovnsb_idl_loop.idl,
                        &sbrec_ha_chassis_group_col_ha_chassis);
     add_column_noalert(ovnsb_idl_loop.idl,
+                       &sbrec_ha_chassis_group_col_ref_chassis);
+    add_column_noalert(ovnsb_idl_loop.idl,
                        &sbrec_ha_chassis_group_col_external_ids);
 
     struct ovsdb_idl_index *sbrec_chassis_by_name
@@ -8106,6 +8250,7 @@ main(int argc, char *argv[])
             .ovnnb_txn = ovsdb_idl_loop_run(&ovnnb_idl_loop),
             .ovnsb_idl = ovnsb_idl_loop.idl,
             .ovnsb_txn = ovsdb_idl_loop_run(&ovnsb_idl_loop),
+            .sbrec_chassis_by_name = sbrec_chassis_by_name,
             .sbrec_ha_chassis_grp_by_name = sbrec_ha_chassis_grp_by_name,
         };
 
