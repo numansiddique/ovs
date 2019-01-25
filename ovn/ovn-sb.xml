@@ -2240,6 +2240,9 @@ tcp.flags = RST;
         </p>
       </column>
 
+      <column name="ha_chassis_group">
+      </column>
+
       <column name="tunnel_key">
         <p>
           A number that represents the logical port in the key (e.g. STT key or
@@ -3331,6 +3334,49 @@ tcp.flags = RST;
       Columns</code> at the beginning of this document.
 
       <column name="external_ids"/>
+    </group>
+  </table>
+
+  <table name="HA_Chassis">
+    <column name="chassis">
+      <p>
+        Name of the chassis that we want to redirect traffic through for the
+        associated logical router port.  The value must match the
+        <ref db="OVN_Southbound" table="Chassis" column="name"/> column
+        of the <ref db="OVN_Southbound" table="Chassis"/> table in the
+        <ref db="OVN_Southbound"/> database.
+      </p>
+    </column>
+
+    <column name="priority">
+      <p>
+        This is the priority of a chassis among all
+        <ref table="HA_Chassis"/> belonging to the same logical router
+        port.
+      </p>
+    </column>
+
+    <group title="Common Columns">
+      <column name="external_ids">
+        See <em>External IDs</em> at the beginning of this document.
+      </column>
+    </group>
+  </table>
+
+  <table name="HA_Chassis_Group">
+    <column name="name">
+    </column>
+
+    <column name="ha_chassis">
+    </column>
+
+    <column name="ref_chassis">
+    </column>
+
+    <group title="Common Columns">
+      <column name="external_ids">
+        See <em>External IDs</em> at the beginning of this document.
+      </column>
     </group>
   </table>
 </database>

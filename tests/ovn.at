@@ -9574,6 +9574,33 @@ echo "------ Port_Binding chassisredirect -------"
 ovn-sbctl find Port_Binding type=chassisredirect
 echo "-------------------------------------------"
 
+# There should be one ha_chassis_group with the name "outside"
+ha_chassi_grp_name=`ovn-sbctl --bare --columns name find \
+ha_chassis_group name="outside"`
+
+AT_CHECK([test $ha_chassi_grp_name = outside])
+
+# There should be 2 ha_chassis rows in SB DB.
+AT_CHECK([ovn-sbctl list ha_chassis | grep chassis | awk '{print $3}' \
+| grep '-' | wc -l ], [0], [2
+])
+
+ha_ch=`ovn-sbctl --bare --columns ha_chassis  find ha_chassis_group`
+ha_ch=`echo $ha_ch | sed 's/ //g'`
+# Trim the spaces.
+echo "ha ch in grp = $ha_ch"
+
+ha_ch_list=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list="$ha_ch_list $i"
+done
+
+# Trim the spaces.
+ha_ch_list=`echo $ha_ch_list | sed 's/ //g'`
+
+AT_CHECK([test "$ha_ch_list" = "$ha_ch"])
+
 for chassis in gw1 gw2 hv1 hv2; do
     as $chassis
     echo "------ $chassis dump ----------"
@@ -9769,6 +9796,13 @@ for chassis in gw1 hv1 hv2; do
     test "$bfd_cfg" = "enable=true min_tx=1500 mult=5"
 ])
 done
+
+# Delete the Gateway_Chassis for lrp - outside
+ovn-nbctl clear Logical_Router_Port outside gateway_chassis
+
+# There shoud be no ha_chassis_group rows in SB DB.
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list ha_chassis_group | wc -l`])
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list ha_chassis | wc -l`])
 
 OVN_CLEANUP([gw1],[gw2],[hv1],[hv2])
 
@@ -10006,10 +10040,7 @@ ovn-nbctl --wait=hv --timeout=3 sync
 gw2_chassis=$(ovn-sbctl --bare --columns=_uuid find Chassis name=gw2)
 ovn-sbctl destroy Chassis $gw2_chassis
 
-# Ensure ovn-controller has processed latest sbdb update
-# ovn-nbctl --wait=hv sync
-
-AT_CHECK([grep "Releasing lport" gw1/ovn-controller.log], [1], [])
+OVS_WAIT_UNTIL([test 0 = `grep -c "Releasing lport" gw1/ovn-controller.log`])
 
 OVN_CLEANUP([gw1],[gw2],[hv1])
 
