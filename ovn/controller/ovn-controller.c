@@ -690,7 +690,7 @@ main(int argc, char *argv[])
                     sbrec_chassis_table_get(ovnsb_idl_loop.idl), chassis_id,
                     sbrec_sb_global_first(ovnsb_idl_loop.idl));
                 bfd_calculate_active_tunnels(br_int, &active_tunnels);
-                binding_run(ovnsb_idl_txn, ovs_idl_txn, sbrec_chassis_by_name,
+                binding_run(ovnsb_idl_txn, ovs_idl_txn,
                             sbrec_datapath_binding_by_key,
                             sbrec_port_binding_by_datapath,
                             sbrec_port_binding_by_name,
@@ -720,7 +720,7 @@ main(int argc, char *argv[])
                 enum mf_field_id mff_ovn_geneve = ofctrl_run(
                     br_int, &pending_ct_zones);
 
-                pinctrl_run(ovnsb_idl_txn, sbrec_chassis_by_name,
+                pinctrl_run(ovnsb_idl_txn,
                             sbrec_datapath_binding_by_key,
                             sbrec_port_binding_by_datapath,
                             sbrec_port_binding_by_key,
@@ -740,7 +740,6 @@ main(int argc, char *argv[])
 
                         struct hmap flow_table = HMAP_INITIALIZER(&flow_table);
                         lflow_run(
-                            sbrec_chassis_by_name,
                             sbrec_multicast_group_by_name_datapath,
                             sbrec_port_binding_by_name,
                             sbrec_dhcp_options_table_get(ovnsb_idl_loop.idl),
@@ -754,15 +753,13 @@ main(int argc, char *argv[])
 
                         if (chassis_id) {
                             bfd_run(
-                                sbrec_chassis_by_name,
-                                sbrec_port_binding_by_datapath,
                                 ovsrec_interface_table_get(ovs_idl_loop.idl),
                                 br_int, chassis,
-                                sbrec_sb_global_table_get(ovnsb_idl_loop.idl),
-                                &local_datapaths);
+                                sbrec_ha_chassis_group_table_get(
+                                    ovnsb_idl_loop.idl),
+                                sbrec_sb_global_table_get(ovnsb_idl_loop.idl));
                         }
                         physical_run(
-                            sbrec_chassis_by_name,
                             sbrec_port_binding_by_name,
                             sbrec_multicast_group_table_get(
                                 ovnsb_idl_loop.idl),
