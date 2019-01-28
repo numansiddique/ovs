@@ -15,7 +15,7 @@
 
 #include <config.h>
 #include "binding.h"
-#include "gchassis.h"
+#include "ha-chassis.h"
 #include "lflow.h"
 #include "lport.h"
 
@@ -394,7 +394,6 @@ update_local_lport_ids(struct sset *local_lport_ids,
 static void
 consider_local_datapath(struct ovsdb_idl_txn *ovnsb_idl_txn,
                         struct ovsdb_idl_txn *ovs_idl_txn,
-                        struct ovsdb_idl_index *sbrec_chassis_by_name,
                         struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                         struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
                         struct ovsdb_idl_index *sbrec_port_binding_by_name,
@@ -409,7 +408,6 @@ consider_local_datapath(struct ovsdb_idl_txn *ovnsb_idl_txn,
 {
     const struct ovsrec_interface *iface_rec
         = shash_find_data(lport_to_iface, binding_rec->logical_port);
-    struct ovs_list *gateway_chassis = NULL;
 
     bool our_chassis = false;
     if (iface_rec
@@ -442,20 +440,17 @@ consider_local_datapath(struct ovsdb_idl_txn *ovnsb_idl_txn,
                                binding_rec->datapath, false, local_datapaths);
         }
     } else if (!strcmp(binding_rec->type, "chassisredirect")) {
-        gateway_chassis = gateway_chassis_get_ordered(sbrec_chassis_by_name,
-                                                      binding_rec);
-        if (gateway_chassis &&
-            gateway_chassis_contains(gateway_chassis, chassis_rec)) {
-
-            our_chassis = gateway_chassis_is_active(
-                gateway_chassis, chassis_rec, active_tunnels);
+        if (ha_chassis_group_contains(binding_rec->ha_chassis_group,
+                                      chassis_rec)) {
+            our_chassis = ha_chassis_group_is_active(
+                binding_rec->ha_chassis_group,
+                active_tunnels, chassis_rec);
 
             add_local_datapath(sbrec_datapath_binding_by_key,
                                sbrec_port_binding_by_datapath,
                                sbrec_port_binding_by_name,
                                binding_rec->datapath, false, local_datapaths);
         }
-        gateway_chassis_destroy(gateway_chassis);
     } else if (!strcmp(binding_rec->type, "l3gateway")) {
         const char *chassis_id = smap_get(&binding_rec->options,
                                           "l3gateway-chassis");
@@ -548,7 +543,6 @@ consider_localnet_port(const struct sbrec_port_binding *binding_rec,
 void
 binding_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
             struct ovsdb_idl_txn *ovs_idl_txn,
-            struct ovsdb_idl_index *sbrec_chassis_by_name,
             struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
             struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
             struct ovsdb_idl_index *sbrec_port_binding_by_name,
@@ -581,7 +575,6 @@ binding_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
      * directly connected logical ports and children of those ports. */
     SBREC_PORT_BINDING_TABLE_FOR_EACH (binding_rec, port_binding_table) {
         consider_local_datapath(ovnsb_idl_txn, ovs_idl_txn,
-                                sbrec_chassis_by_name,
                                 sbrec_datapath_binding_by_key,
                                 sbrec_port_binding_by_datapath,
                                 sbrec_port_binding_by_name,
