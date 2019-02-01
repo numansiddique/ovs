@@ -20,39 +20,67 @@ ovn-nbctl --wait=sb \
     set Logical_Router_Port alice 'gateway_chassis=[@gc0,@gc1]'
 
 nb_gwc1_uuid=`ovn-nbctl --bare --columns _uuid find Gateway_Chassis name="alice_gw1"`
-gwc1_uuid=`ovn-sbctl --bare --columns _uuid find Gateway_Chassis name="alice_gw1"`
-gwc2_uuid=`ovn-sbctl --bare --columns _uuid find Gateway_Chassis name="alice_gw2"`
 
-
-echo "Port_Binding for cr-alice:"
-ovn-sbctl find port_binding logical_port="cr-alice"
-echo "Gateway_Chassis list:"
-ovn-sbctl list Gateway_Chassis
-
-AT_CHECK([ovn-sbctl --bare --columns gateway_chassis find port_binding logical_port="cr-alice" | grep $gwc1_uuid | wc -l], [0], [1
+# With the new ha_chassis_group table added, there should be no rows in
+# gateway_chassis table in SB DB.
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
 ])
-AT_CHECK([ovn-sbctl --bare --columns gateway_chassis find port_binding logical_port="cr-alice" | grep $gwc2_uuid | wc -l], [0], [1
+
+# There should be one ha_chassis_group with the name "alice"
+ha_chassi_grp_name=`ovn-sbctl --bare --columns name find \
+ha_chassis_group name="alice"`
+
+AT_CHECK([test $ha_chassi_grp_name = alice])
+
+ha_chgrp_uuid=`ovn-sbctl --bare --columns _uuid find ha_chassis_group name=alice`
+
+AT_CHECK([ovn-sbctl --bare --columns ha_chassis_group find port_binding \
+logical_port="cr-alice" | grep $ha_chgrp_uuid | wc -l], [0], [1
 ])
+
+gw_ch=`ovn-sbctl --bare --columns gateway_chassis find port_binding \
+logical_port="cr-alice"`
+AT_CHECK([test "$gw_ch" = ""])
+
+ha_ch=`ovn-sbctl --bare --columns ha_chassis  find ha_chassis_group`
+ha_ch=`echo $ha_ch | sed 's/ //g'`
+# Trim the spaces.
+echo "ha ch in grp = $ha_ch"
+
+ha_ch_list=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list="$ha_ch_list $i"
+done
+
+# Trim the spaces.
+ha_ch_list=`echo $ha_ch_list | sed 's/ //g'`
+
+AT_CHECK([test "$ha_ch_list" = "$ha_ch"])
 
 # delete the 2nd Gateway_Chassis on NBDB for alice port
-
 ovn-nbctl --wait=sb set Logical_Router_Port alice gateway_chassis=${nb_gwc1_uuid}
 
-gwc1_uuid=`ovn-sbctl --bare --columns _uuid find Gateway_Chassis name="alice_gw1"`
-
-AT_CHECK([ovn-sbctl --bare --columns gateway_chassis find port_binding logical_port="cr-alice" | grep $gwc1_uuid | wc -l], [0], [1
+# There should be only 1 row in ha_chassis SB DB table.
+AT_CHECK([ovn-sbctl --bare --columns _uuid list ha_chassis | wc -l], [0], [1
 ])
 
-AT_CHECK([ovn-sbctl find Gateway_Chassis name=alice_gw2], [0], [])
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
+])
 
 # delete all the gateway_chassis on NBDB for alice port
 
 ovn-nbctl --wait=sb clear Logical_Router_Port alice gateway_chassis
 
-# expect that the Gateway_Chassis doesn't exist anymore
+# expect that the ha_chassis doesn't exist anymore
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
+])
 
-AT_CHECK([ovn-sbctl find Gateway_Chassis name=alice_gw1], [0], [])
-AT_CHECK([ovn-sbctl find Gateway_Chassis name=alice_gw2], [0], [])
+AT_CHECK([ovn-sbctl list ha_chassis | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl list ha_chassis_group | wc -l], [0], [0
+])
 
 AT_CLEANUP
 
@@ -68,19 +96,40 @@ ovn-nbctl --wait=sb lrp-add R1 bob 00:00:02:01:02:03 172.16.1.1/24 \
     -- set Logical_Router_Port bob options:redirect-chassis="gw1"
 
 
-# It should be converted to Gateway_Chassis entries in SBDB, and
+# It should be converted to ha_chassis_group entries in SBDB, and
 # still redirect-chassis is kept for backwards compatibility
 
-gwc1_uuid=`ovn-sbctl --bare --columns _uuid find Gateway_Chassis name="bob_gw1"`
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
+])
 
-AT_CHECK([ovn-sbctl --bare --columns gateway_chassis find port_binding logical_port="cr-bob" | grep $gwc1_uuid | wc -l], [0], [1
+AT_CHECK([ovn-sbctl --bare --columns _uuid list ha_chassis | wc -l], [0], [1
+])
+
+AT_CHECK([ovn-sbctl --bare --columns _uuid list ha_chassis_group | wc -l], [0], [1
+])
+
+# There should be one ha_chassis_group with the name "bob_gw1"
+ha_chassi_grp_name=`ovn-sbctl --bare --columns name find \
+ha_chassis_group name="bob_gw1"`
+
+AT_CHECK([test $ha_chassi_grp_name = bob_gw1])
+
+ha_chgrp_uuid=`ovn-sbctl --bare --columns _uuid find ha_chassis_group name=bob_gw1`
+
+AT_CHECK([ovn-sbctl --bare --columns ha_chassis_group find port_binding \
+logical_port="cr-bob" | grep $ha_chgrp_uuid | wc -l], [0], [1
 ])
 
 ovn-nbctl --wait=sb remove Logical_Router_Port bob options redirect-chassis
 
-# expect that the Gateway_Chassis doesn't exist anymore
+# expect that the ha_chassis/ha_chassis_group doesn't exist anymore
 
 AT_CHECK([ovn-sbctl find Gateway_Chassis name=bob_gw1], [0], [])
+AT_CHECK([ovn-sbctl list ha_chassis | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl list ha_chassis_group | wc -l], [0], [0
+])
 
 AT_CLEANUP
 
