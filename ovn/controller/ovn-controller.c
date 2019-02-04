@@ -701,7 +701,16 @@ main(int argc, char *argv[])
         if (chassis_id) {
             chassis = chassis_run(&ctx, chassis_id, br_int);
             encaps_run(&ctx, br_int, chassis_id);
-            bfd_calculate_active_tunnels(br_int, &active_tunnels);
+            if (ofctrl_is_connected()) {
+                /* Calculate the active tunnels only if have an an active
+                 * OpenFlow connection to br-int.
+                 * If we don't have a connection to br-int, it could mean
+                 * ovs-vswitchd is down for some reason and the BFD status
+                 * in the Interface rows could be stale. So its better to
+                 * consider 'active_tunnels' set to be empty if it's not
+                 * connected. */
+                bfd_calculate_active_tunnels(br_int, &active_tunnels);
+            }
             binding_run(&ctx, br_int, chassis,
                         &chassis_index, &active_tunnels, &local_datapaths,
                         &local_lports, &local_lport_ids);
