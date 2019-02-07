@@ -43,6 +43,7 @@ struct sbrec_dhcp_options_table;
 struct sbrec_dhcpv6_options_table;
 struct sbrec_logical_flow_table;
 struct sbrec_mac_binding_table;
+struct sbrec_fdb_table;
 struct simap;
 struct sset;
 struct uuid;
@@ -60,6 +61,7 @@ struct uuid;
 #define OFTABLE_SAVE_INPORT          64
 #define OFTABLE_LOG_TO_PHY           65
 #define OFTABLE_MAC_BINDING          66
+#define OFTABLE_FDB                  67
 
 /* The number of tables for the ingress and egress pipelines. */
 #define LOG_PIPELINE_LEN 24
@@ -73,6 +75,7 @@ void lflow_run(struct ovsdb_idl_index *sbrec_chassis_by_name,
                const struct sbrec_logical_flow_table *,
                const struct sbrec_mac_binding_table *,
                const struct sbrec_chassis *chassis,
+               const struct sbrec_fdb_table *fdb_table,
                const struct hmap *local_datapaths,
                const struct shash *addr_sets,
                const struct shash *port_groups,

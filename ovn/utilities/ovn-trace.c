@@ -2106,6 +2106,12 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
             execute_tcp_reset(ovnact_get_TCP_RESET(a), dp, uflow, table_id,
                               pipeline, super);
             break;
+
+        case OVNACT_GET_FDB:
+            break;
+
+        case OVNACT_PUT_FDB:
+            break;
         }
 
     }

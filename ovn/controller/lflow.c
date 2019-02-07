@@ -84,6 +84,11 @@ static void consider_logical_flow(
 static bool
 lookup_port_cb(const void *aux_, const char *port_name, unsigned int *portp)
 {
+    if (!strcmp(port_name, "none")) {
+        *portp = 0;
+        return true;
+    }
+
     const struct lookup_port_aux *aux = aux_;
 
     const struct sbrec_port_binding *pb
@@ -328,6 +333,7 @@ consider_logical_flow(
         .egress_ptable = OFTABLE_LOG_EGRESS_PIPELINE,
         .output_ptable = output_ptable,
         .mac_bind_ptable = OFTABLE_MAC_BINDING,
+        .fdb_ptable = OFTABLE_FDB,
     };
     ovnacts_encode(ovnacts.data, ovnacts.size, &ep, &ofpacts);
     ovnacts_free(ovnacts.data, ovnacts.size);
@@ -457,6 +463,60 @@ add_neighbor_flows(struct ovsdb_idl_index *sbrec_port_binding_by_name,
     }
 }
 
+static void
+consider_fdb_flow(struct ovsdb_idl_index *sbrec_port_binding_by_name,
+                  const struct sbrec_fdb *fdb, struct hmap *flow_table)
+{
+    const struct sbrec_port_binding *pb
+        = lport_lookup_by_name(sbrec_port_binding_by_name, fdb->logical_port);
+    if (!pb) {
+        return;
+    }
+
+    struct eth_addr mac;
+    if (!eth_addr_from_string(fdb->mac, &mac)) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
+        VLOG_WARN_RL(&rl, "bad 'mac' %s", fdb->mac);
+        return;
+    }
+
+    struct match match = MATCH_CATCHALL_INITIALIZER;
+    match_set_metadata(&match, htonll(pb->datapath->tunnel_key));
+    match_set_dl_dst(&match, mac);
+
+    uint64_t stub[1024 / 8];
+    struct ofpbuf ofpacts = OFPBUF_STUB_INITIALIZER(stub);
+    struct ofpact_set_field *sf =
+        ofpact_put_set_field(&ofpacts, mf_from_id(MFF_LOG_OUTPORT),
+                             NULL, NULL);
+    bitwise_put(pb->tunnel_key, sf->value,
+                sf->field->n_bytes, 0, sf->field->n_bits);
+    bitwise_one(ofpact_set_field_mask(sf), sf->field->n_bytes, 0,
+                sf->field->n_bits);
+
+    sf = ofpact_put_set_field(&ofpacts, mf_from_id(MFF_LOG_REG0),
+                              NULL, NULL);
+    bitwise_put(1, sf->value, sf->field->n_bytes, 0, sf->field->n_bits);
+    bitwise_one(ofpact_set_field_mask(sf), sf->field->n_bytes, 0,
+                sf->field->n_bits);
+
+    ofctrl_add_flow(flow_table, OFTABLE_FDB, 100, 0, &match, &ofpacts);
+    ofpbuf_uninit(&ofpacts);
+}
+
+/* Adds an OpenFlow flow to flow tables for each MAC binding in the OVN
+ * southbound database. */
+static void
+add_fdb_flows(struct ovsdb_idl_index *sbrec_port_binding_by_name,
+              const struct sbrec_fdb_table *fdb_table,
+              struct hmap *flow_table)
+{
+    const struct sbrec_fdb *fdb;
+    SBREC_FDB_TABLE_FOR_EACH (fdb, fdb_table) {
+        consider_fdb_flow(sbrec_port_binding_by_name, fdb, flow_table);
+    }
+}
+
 /* Translates logical flows in the Logical_Flow table in the OVN_SB database
  * into OpenFlow flows.  See ovn-architecture(7) for more information. */
 void
@@ -468,6 +528,7 @@ lflow_run(struct ovsdb_idl_index *sbrec_chassis_by_name,
           const struct sbrec_logical_flow_table *logical_flow_table,
           const struct sbrec_mac_binding_table *mac_binding_table,
           const struct sbrec_chassis *chassis,
+          const struct sbrec_fdb_table *fdb_table,
           const struct hmap *local_datapaths,
           const struct shash *addr_sets,
           const struct shash *port_groups,
@@ -488,6 +549,7 @@ lflow_run(struct ovsdb_idl_index *sbrec_chassis_by_name,
                       meter_table);
     add_neighbor_flows(sbrec_port_binding_by_name, mac_binding_table,
                        flow_table);
+    add_fdb_flows(sbrec_port_binding_by_name, fdb_table, flow_table);
 }
 
 void

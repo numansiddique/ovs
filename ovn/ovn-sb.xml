@@ -2700,6 +2700,31 @@ tcp.flags = RST;
     </column>
   </table>
 
+  <table name="FDB" title="Port to MAC bindings">
+    <p>
+      This table is primarily used to learn the MACs observed on a VIF
+      which belongs to a <code>Logical_Switch_Port</code> record in
+      <code>OVN_Northbound</code> whose port security is disabled.
+      If port security is disabled on a <code>Logical_Switch_Port</code>
+      record, OVN should allow traffic with any source mac from the
+      VIF. OVN action <code>learn_mac</code> is used to learn the mac
+      and add an entry in this table. This table will be used to deliver
+      a packet to the VIF, If a packet's <code>eth.dst</code> is learnt.
+    </p>
+
+    <column name="mac">
+      The learnt mac address.
+    </column>
+
+    <column name="logical_port">
+      The logical port on which the mac was learnt.
+    </column>
+
+    <column name="datapath">
+      The logical datapath to which the logical port belongs.
+    </column>
+  </table>
+
   <table name="DHCP_Options" title="DHCP Options supported by native OVN DHCP">
     <p>
       Each row in this table stores the DHCP Options supported by native OVN

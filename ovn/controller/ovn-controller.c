@@ -140,6 +140,8 @@ update_sb_monitors(struct ovsdb_idl *ovnsb_idl,
     struct ovsdb_idl_condition mb = OVSDB_IDL_CONDITION_INIT(&mb);
     struct ovsdb_idl_condition mg = OVSDB_IDL_CONDITION_INIT(&mg);
     struct ovsdb_idl_condition dns = OVSDB_IDL_CONDITION_INIT(&dns);
+    struct ovsdb_idl_condition fdb = OVSDB_IDL_CONDITION_INIT(&fdb);
+
     sbrec_port_binding_add_clause_type(&pb, OVSDB_F_EQ, "patch");
     /* XXX: We can optimize this, if we find a way to only monitor
      * ports that have a Gateway_Chassis that point's to our own
@@ -181,6 +183,7 @@ update_sb_monitors(struct ovsdb_idl *ovnsb_idl,
             sbrec_mac_binding_add_clause_datapath(&mb, OVSDB_F_EQ, uuid);
             sbrec_multicast_group_add_clause_datapath(&mg, OVSDB_F_EQ, uuid);
             sbrec_dns_add_clause_datapaths(&dns, OVSDB_F_INCLUDES, &uuid, 1);
+            sbrec_fdb_add_clause_datapath(&fdb, OVSDB_F_EQ, uuid);
         }
     }
     sbrec_port_binding_set_condition(ovnsb_idl, &pb);
@@ -188,11 +191,14 @@ update_sb_monitors(struct ovsdb_idl *ovnsb_idl,
     sbrec_mac_binding_set_condition(ovnsb_idl, &mb);
     sbrec_multicast_group_set_condition(ovnsb_idl, &mg);
     sbrec_dns_set_condition(ovnsb_idl, &dns);
+    sbrec_fdb_set_condition(ovnsb_idl, &fdb);
+
     ovsdb_idl_condition_destroy(&pb);
     ovsdb_idl_condition_destroy(&lf);
     ovsdb_idl_condition_destroy(&mb);
     ovsdb_idl_condition_destroy(&mg);
     ovsdb_idl_condition_destroy(&dns);
+    ovsdb_idl_condition_destroy(&fdb);
 }
 
 static const struct ovsrec_bridge *
@@ -623,6 +629,9 @@ main(int argc, char *argv[])
         = ovsdb_idl_index_create2(ovnsb_idl_loop.idl,
                                   &sbrec_mac_binding_col_logical_port,
                                   &sbrec_mac_binding_col_ip);
+    struct ovsdb_idl_index *sbrec_fdb_by_mac
+        = ovsdb_idl_index_create1(ovnsb_idl_loop.idl,
+                                  &sbrec_fdb_col_mac);
 
     ovsdb_idl_omit_alert(ovnsb_idl_loop.idl, &sbrec_chassis_col_nb_cfg);
     update_sb_monitors(ovnsb_idl_loop.idl, NULL, NULL, NULL);
@@ -737,6 +746,7 @@ main(int argc, char *argv[])
                             sbrec_port_binding_by_key,
                             sbrec_port_binding_by_name,
                             sbrec_mac_binding_by_lport_ip,
+                            sbrec_fdb_by_mac,
                             sbrec_dns_table_get(ovnsb_idl_loop.idl),
                             br_int, chassis,
                             &local_datapaths, &active_tunnels);
@@ -759,6 +769,7 @@ main(int argc, char *argv[])
                             sbrec_logical_flow_table_get(ovnsb_idl_loop.idl),
                             sbrec_mac_binding_table_get(ovnsb_idl_loop.idl),
                             chassis,
+                            sbrec_fdb_table_get(ovnsb_idl_loop.idl),
                             &local_datapaths, &addr_sets,
                             &port_groups, &active_tunnels, &local_lport_ids,
                             &flow_table, &group_table, &meter_table);

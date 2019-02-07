@@ -120,6 +120,7 @@ enum ovn_stage {
     PIPELINE_STAGE(SWITCH, IN,  DNS_LOOKUP,    14, "ls_in_dns_lookup")    \
     PIPELINE_STAGE(SWITCH, IN,  DNS_RESPONSE,  15, "ls_in_dns_response")  \
     PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,       16, "ls_in_l2_lkup")       \
+    PIPELINE_STAGE(SWITCH, IN,  L2_UNKNOWN,    17, "ls_in_l2_unknown")    \
                                                                           \
     /* Logical switch egress stages. */                                   \
     PIPELINE_STAGE(SWITCH, OUT, PRE_LB,       0, "ls_out_pre_lb")         \
@@ -4126,16 +4127,44 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         ds_clear(&match);
         ds_clear(&actions);
         ds_put_format(&match, "inport == %s", op->json_key);
-        build_port_security_l2("eth.src", op->ps_addrs, op->n_ps_addrs,
-                               &match);
+
+        if (op->n_ps_addrs) {
+            build_port_security_l2("eth.src", op->ps_addrs, op->n_ps_addrs,
+                                    &match);
+        }
 
         const char *queue_id = smap_get(&op->sb->options, "qdisc_queue_id");
         if (queue_id) {
             ds_put_format(&actions, "set_queue(%s); ", queue_id);
         }
+
+        if (!op->n_ps_addrs && !op->peer && op->n_lsp_addrs) {
+            build_port_security_l2("eth.src", op->lsp_addrs, op->n_lsp_addrs,
+                                   &match);
+        }
+
         ds_put_cstr(&actions, "next;");
         ovn_lflow_add(lflows, op->od, S_SWITCH_IN_PORT_SEC_L2, 50,
                       ds_cstr(&match), ds_cstr(&actions));
+
+        if (!op->n_ps_addrs && !op->peer &&
+            strcmp(op->nbsp->type, "localnet")) {
+             /* If no port security addresses are defined, it means port
+             * security is disabled for this logical port. OVN should
+             * allow traffic from any eth.src for this logical port.
+             * We need to learn the mac address in such case so that we
+             * can deliver the packet if the eth.dst matches the learnt
+             * addr. */
+            ds_clear(&match);
+            ds_put_format(&match, "inport == %s", op->json_key);
+            ds_clear(&actions);
+            if (queue_id) {
+                ds_put_format(&actions, "set_queue(%s); ", queue_id);
+            }
+            ds_put_cstr(&actions, "put_fdb(inport, eth.src); next;");
+            ovn_lflow_add(lflows, op->od, S_SWITCH_IN_PORT_SEC_L2, 30,
+                          ds_cstr(&match), ds_cstr(&actions));
+        }
 
         if (op->nbsp->n_port_security) {
             build_port_security_ip(P_IN, op, lflows);
@@ -4567,16 +4596,25 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
     }
 
-    /* Ingress table 16: Destination lookup for unknown MACs (priority 0). */
+    /* Ingress table 16, 17: Destination lookup for unknown MACs (priority 0). */
     HMAP_FOR_EACH (od, key_node, datapaths) {
         if (!od->nbs) {
             continue;
         }
 
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_LKUP, 0, "1",
+                      "get_fdb(eth.dst); next;");
+
         if (od->has_unknown) {
-            ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_LKUP, 0, "1",
+            ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_UNKNOWN, 50,
+                          "outport == \"none\"",
                           "outport = \""MC_UNKNOWN"\"; output;");
+        } else {
+            ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_UNKNOWN, 50,
+                          "outport == \"none\"", "drop;");
         }
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_UNKNOWN, 0, "1",
+                      "output;");
     }
 
     /* Egress tables 8: Egress port security - IP (priority 0)

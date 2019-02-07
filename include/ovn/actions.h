@@ -80,7 +80,10 @@ struct ovn_extend_table;
     OVNACT(LOG,               ovnact_log)             \
     OVNACT(PUT_ND_RA_OPTS,    ovnact_put_opts)        \
     OVNACT(ND_NS,             ovnact_nest)            \
-    OVNACT(SET_METER,         ovnact_set_meter)
+    OVNACT(SET_METER,         ovnact_set_meter)       \
+    OVNACT(GET_FDB,           ovnact_get_fdb)       \
+    OVNACT(PUT_FDB,           ovnact_put_fdb)
+
 
 /* enum ovnact_type, with a member OVNACT_<ENUM> for each action. */
 enum OVS_PACKED_ENUM ovnact_type {
@@ -294,6 +297,19 @@ struct ovnact_set_meter {
     uint64_t burst;                  /* burst rate field, in kbps. */
 };
 
+/* OVNACT_GET_FDB. */
+struct ovnact_get_fdb {
+    struct ovnact ovnact;
+    struct expr_field mac;     /* 48-bit Ethernet address. */
+};
+
+/* OVNACT_PUT_FDB. */
+struct ovnact_put_fdb {
+    struct ovnact ovnact;
+    struct expr_field port;     /* Logical port name. */
+    struct expr_field mac;      /* 48-bit Ethernet address. */
+};
+
 /* Internal use by the helpers below. */
 void ovnact_init(struct ovnact *, enum ovnact_type, size_t len);
 void *ovnact_put(struct ofpbuf *, enum ovnact_type, size_t len);
@@ -452,6 +468,13 @@ enum action_opcode {
         * The actions, in OpenFlow 1.3 format, follow the action_header.
         */
     ACTION_OPCODE_ND_NA_ROUTER,
+
+    /* put_fdb(inport, mac).
+     * Arguments are passed through the packet metadata and data, as follows:
+     *
+     * MFF_LOG_INPORT = port
+     * MFF_ETH_SRC = mac */
+    ACTION_OPCODE_PUT_FDB,
 };
 
 /* Header. */
@@ -545,6 +568,7 @@ struct ovnact_encode_params {
     uint8_t output_ptable;      /* OpenFlow table for 'output' to resubmit. */
     uint8_t mac_bind_ptable;    /* OpenFlow table for 'get_arp'/'get_nd' to
                                    resubmit. */
+    uint8_t fdb_ptable;         /* OpenFlow table for 'get_fdb' to resubmit. */
 };
 
 void ovnacts_encode(const struct ovnact[], size_t ovnacts_len,

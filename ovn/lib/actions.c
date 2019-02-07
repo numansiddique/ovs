@@ -2295,6 +2295,81 @@ ovnact_set_meter_free(struct ovnact_set_meter *ct OVS_UNUSED)
 {
 }
 
+
+static void
+format_PUT_FDB(const struct ovnact_put_fdb *put_fdb, struct ds *s)
+{
+    ds_put_cstr(s, "put_fdb(");
+    expr_field_format(&put_fdb->port, s);
+    ds_put_cstr(s, ", ");
+    expr_field_format(&put_fdb->mac, s);
+    ds_put_cstr(s, ");");
+}
+
+static void
+encode_PUT_FDB(const struct ovnact_put_fdb *put_fdb,
+                 const struct ovnact_encode_params *ep OVS_UNUSED,
+                 struct ofpbuf *ofpacts)
+{
+    const struct arg args[] = {
+        { expr_resolve_field(&put_fdb->port), MFF_LOG_INPORT },
+        { expr_resolve_field(&put_fdb->mac), MFF_ETH_SRC }
+    };
+    encode_setup_args(args, ARRAY_SIZE(args), ofpacts);
+    encode_controller_op(ACTION_OPCODE_PUT_FDB, ofpacts);
+    encode_restore_args(args, ARRAY_SIZE(args), ofpacts);
+}
+
+static void
+parse_put_fdb(struct action_context *ctx, struct ovnact_put_fdb *put_fdb)
+{
+    lexer_force_match(ctx->lexer, LEX_T_LPAREN);
+    action_parse_field(ctx, 0, false, &put_fdb->port);
+    lexer_force_match(ctx->lexer, LEX_T_COMMA);
+    action_parse_field(ctx, 48, false, &put_fdb->mac);
+    lexer_force_match(ctx->lexer, LEX_T_RPAREN);
+}
+
+static void
+ovnact_put_fdb_free(struct ovnact_put_fdb *put_fdb OVS_UNUSED)
+{
+}
+
+static void
+format_GET_FDB(const struct ovnact_get_fdb *get_fdb, struct ds *s)
+{
+    ds_put_cstr(s, "get_fdb(");
+    expr_field_format(&get_fdb->mac, s);
+    ds_put_cstr(s, ");");
+}
+
+static void
+encode_GET_FDB(const struct ovnact_get_fdb *get_fdb,
+                      const struct ovnact_encode_params *ep OVS_UNUSED,
+                      struct ofpbuf *ofpacts OVS_UNUSED)
+{
+    const struct arg args[] = {
+        { expr_resolve_field(&get_fdb->mac), MFF_ETH_DST },
+    };
+    encode_setup_args(args, ARRAY_SIZE(args), ofpacts);
+    put_load(0, MFF_LOG_OUTPORT, 0, 32, ofpacts);
+    emit_resubmit(ofpacts, ep->fdb_ptable);
+    encode_restore_args(args, ARRAY_SIZE(args), ofpacts);
+}
+
+static void
+parse_get_fdb(struct action_context *ctx, struct ovnact_get_fdb *get_fdb)
+{
+    lexer_force_match(ctx->lexer, LEX_T_LPAREN);
+    action_parse_field(ctx, 48, false, &get_fdb->mac);
+    lexer_force_match(ctx->lexer, LEX_T_RPAREN);
+}
+
+static void
+ovnact_get_fdb_free(struct ovnact_get_fdb *get_fdb OVS_UNUSED)
+{
+}
+
 /* Parses an assignment or exchange or put_dhcp_opts action. */
 static void
 parse_set_action(struct action_context *ctx)
@@ -2392,6 +2467,10 @@ parse_action(struct action_context *ctx)
         parse_LOG(ctx);
     } else if (lexer_match_id(ctx->lexer, "set_meter")) {
         parse_set_meter_action(ctx);
+    } else if (lexer_match_id(ctx->lexer, "put_fdb")) {
+        parse_put_fdb(ctx, ovnact_put_PUT_FDB(ctx->ovnacts));
+    } else if (lexer_match_id(ctx->lexer, "get_fdb")) {
+        parse_get_fdb(ctx, ovnact_put_GET_FDB(ctx->ovnacts));
     } else {
         lexer_syntax_error(ctx->lexer, "expecting action");
     }

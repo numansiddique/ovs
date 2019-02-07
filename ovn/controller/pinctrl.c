@@ -102,6 +102,8 @@ static void pinctrl_handle_nd_ns(const struct flow *ip_flow,
                                  struct dp_packet *pkt_in,
                                  const struct match *md,
                                  struct ofpbuf *userdata);
+static void pinctrl_handle_put_fdb(const struct flow *md,
+                                   const struct flow *headers);
 static void init_ipv6_ras(void);
 static void destroy_ipv6_ras(void);
 static void ipv6_ra_wait(void);
@@ -111,8 +113,19 @@ static void send_ipv6_ras(
     const struct hmap *local_datapaths);
 ;
 
+static void init_put_fdbs(void);
+static void destroy_put_fdbs(void);
+static void run_put_fdbs(
+    struct ovsdb_idl_txn *ovnsb_idl_txn,
+    struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
+    struct ovsdb_idl_index *sbrec_port_binding_by_key,
+    struct ovsdb_idl_index *sbrec_fdb_by_mac);
+static void wait_put_fdbs(struct ovsdb_idl_txn *ovnsb_idl_txn);
+static void flush_put_fdbs(void);
+
 COVERAGE_DEFINE(pinctrl_drop_put_mac_binding);
 COVERAGE_DEFINE(pinctrl_drop_buffered_packets_map);
+COVERAGE_DEFINE(pinctrl_drop_put_fdb);
 
 void
 pinctrl_init(void)
@@ -123,6 +136,7 @@ pinctrl_init(void)
     init_send_garps();
     init_ipv6_ras();
     init_buffered_packets_map();
+    init_put_fdbs();
 }
 
 static ovs_be32
@@ -1468,6 +1482,10 @@ process_packet_in(const struct ofp_header *msg,
                                  &userdata);
         break;
 
+    case ACTION_OPCODE_PUT_FDB:
+        pinctrl_handle_put_fdb(&pin.flow_metadata.flow, &headers);
+        break;
+
     default:
         VLOG_WARN_RL(&rl, "unrecognized packet-in opcode %"PRIu32,
                      ntohl(ah->opcode));
@@ -1510,6 +1528,7 @@ pinctrl_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
             struct ovsdb_idl_index *sbrec_port_binding_by_key,
             struct ovsdb_idl_index *sbrec_port_binding_by_name,
             struct ovsdb_idl_index *sbrec_mac_binding_by_lport_ip,
+            struct ovsdb_idl_index *sbrec_fdb_by_mac,
             const struct sbrec_dns_table *dns_table,
             const struct ovsrec_bridge *br_int,
             const struct sbrec_chassis *chassis,
@@ -1533,6 +1552,7 @@ pinctrl_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
         pinctrl_setup();
         conn_seq_no = rconn_get_connection_seqno(swconn);
         flush_put_mac_bindings();
+        flush_put_fdbs();
     }
 
     /* Process a limited number of messages per call. */
@@ -1559,6 +1579,9 @@ pinctrl_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
     send_ipv6_ras(sbrec_port_binding_by_datapath,
                   sbrec_port_binding_by_name, local_datapaths);
     buffered_packets_map_gc();
+    run_put_fdbs(ovnsb_idl_txn, sbrec_datapath_binding_by_key,
+                 sbrec_port_binding_by_key,
+                 sbrec_fdb_by_mac);
 }
 
 /* Table of ipv6_ra_state structures, keyed on logical port name */
@@ -1860,6 +1883,7 @@ pinctrl_wait(struct ovsdb_idl_txn *ovnsb_idl_txn)
     rconn_recv_wait(swconn);
     send_garp_wait();
     ipv6_ra_wait();
+    wait_put_fdbs(ovnsb_idl_txn);
 }
 
 void
@@ -1870,6 +1894,7 @@ pinctrl_destroy(void)
     destroy_send_garps();
     destroy_ipv6_ras();
     destroy_buffered_packets_map();
+    destroy_put_fdbs();
 }
 
 /* Implementation of the "put_arp" and "put_nd" OVN actions.  These
@@ -2752,4 +2777,176 @@ exit:
     }
     queue_msg(ofputil_encode_resume(pin, continuation, proto));
     dp_packet_uninit(pkt_out_ptr);
+}
+
+/* Implementation of the "put_fdp" OVN action.  This action sends
+ * a packet to ovn-controller, using the flow as an API
+ * (see actions.h for details).  This code implements the actions by
+ * updating the FDB table in the southbound database.
+ *
+ * This code could be a lot simpler if the database could always be updated,
+ * but in fact we can only update it when 'ovnsb_idl_txn' is nonnull.  Thus,
+ * we buffer up a few fdb_bindings (but we don't keep them longer
+ * than 1 second) and apply them whenever a database transaction is
+ * available. */
+
+/* Buffered "put_fdb" operation. */
+struct put_fdb {
+    struct hmap_node hmap_node; /* In 'put_fdbs'. */
+
+    long long int timestamp;    /* In milliseconds. */
+
+    /* Key. */
+    uint32_t dp_key;
+    uint32_t port_key;
+
+    /* Value. */
+    struct eth_addr mac;
+};
+
+/* Contains "struct put_fdb"s. */
+static struct hmap put_fdbs;
+
+static void
+init_put_fdbs(void)
+{
+    hmap_init(&put_fdbs);
+}
+
+static void
+flush_put_fdbs(void)
+{
+    struct put_fdb *pfdb;
+    HMAP_FOR_EACH_POP (pfdb, hmap_node, &put_fdbs) {
+        free(pfdb);
+    }
+}
+
+static void
+destroy_put_fdbs(void)
+{
+    flush_put_fdbs();
+    hmap_destroy(&put_fdbs);
+}
+
+static struct put_fdb *
+pinctrl_find_put_fdb(uint32_t dp_key, uint32_t port_key,
+                     struct eth_addr mac, uint32_t hash)
+{
+    struct put_fdb *pfdb;
+    HMAP_FOR_EACH_WITH_HASH (pfdb, hmap_node, hash, &put_fdbs) {
+        if (pfdb->dp_key == dp_key
+            && pfdb->port_key == port_key
+            && eth_addr_equals(pfdb->mac, mac)) {
+            return pfdb;
+        }
+    }
+    return NULL;
+}
+
+static void
+pinctrl_handle_put_fdb(const struct flow *md, const struct flow *headers)
+{
+    uint32_t dp_key = ntohll(md->metadata);
+    uint32_t port_key = md->regs[MFF_LOG_INPORT - MFF_REG0];
+
+    uint32_t hash = hash_bytes(&headers->dl_src, sizeof headers->dl_src,
+                               hash_2words(dp_key, port_key));
+    struct put_fdb *pfdb = pinctrl_find_put_fdb(dp_key, port_key,
+                                                headers->dl_src, hash);
+    if (!pfdb) {
+        if (hmap_count(&put_fdbs) >= 1000) {
+            COVERAGE_INC(pinctrl_drop_put_fdb);
+            return;
+        }
+
+        pfdb = xmalloc(sizeof *pfdb);
+        hmap_insert(&put_fdbs, &pfdb->hmap_node, hash);
+        pfdb->dp_key = dp_key;
+        pfdb->port_key = port_key;
+    }
+    pfdb->timestamp = time_msec();
+    pfdb->mac = headers->dl_src;
+}
+
+static const struct sbrec_fdb *
+fdb_lookup(struct ovsdb_idl_index *sbrec_fdb_by_mac,
+           const char *mac)
+{
+    struct sbrec_fdb *fdb = sbrec_fdb_index_init_row( sbrec_fdb_by_mac);
+    sbrec_fdb_index_set_mac(fdb, mac);
+
+    const struct sbrec_fdb *retval
+        = sbrec_fdb_index_find(sbrec_fdb_by_mac, fdb);
+
+    sbrec_fdb_index_destroy_row(fdb);
+
+    return retval;
+}
+
+static void
+run_put_fdb(struct ovsdb_idl_txn *ovnsb_idl_txn,
+            struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
+            struct ovsdb_idl_index *sbrec_port_binding_by_key,
+            struct ovsdb_idl_index *sbrec_fdb_by_mac,
+            const struct put_fdb *pfdb)
+{
+    if (time_msec() > pfdb->timestamp + 1000) {
+        return;
+    }
+
+    /* Convert logical datapath and logical port key into lport. */
+    const struct sbrec_port_binding *pb = lport_lookup_by_key(
+        sbrec_datapath_binding_by_key, sbrec_port_binding_by_key,
+        pfdb->dp_key, pfdb->port_key);
+    if (!pb) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+
+        VLOG_WARN_RL(&rl, "unknown logical port with datapath %"PRIu32" "
+                     "and port %"PRIu32, pfdb->dp_key, pfdb->port_key);
+        return;
+    }
+
+    /* Convert ethernet argument to string form for database. */
+    char mac_string[ETH_ADDR_STRLEN + 1];
+    snprintf(mac_string, sizeof mac_string,
+             ETH_ADDR_FMT, ETH_ADDR_ARGS(pfdb->mac));
+
+    /* Update or add an FDB entry. */
+    const struct sbrec_fdb *b =
+        fdb_lookup(sbrec_fdb_by_mac, mac_string);
+    if (!b) {
+        b = sbrec_fdb_insert(ovnsb_idl_txn);
+        sbrec_fdb_set_mac(b, mac_string);
+    }
+    sbrec_fdb_set_logical_port(b, pb->logical_port);
+    sbrec_fdb_set_datapath(b, pb->datapath);
+}
+
+static void
+run_put_fdbs(struct ovsdb_idl_txn *ovnsb_idl_txn,
+             struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
+             struct ovsdb_idl_index *sbrec_port_binding_by_key,
+             struct ovsdb_idl_index *sbrec_fdb_by_mac)
+{
+    if (!ovnsb_idl_txn) {
+        return;
+    }
+
+    const struct put_fdb *pfdb;
+    HMAP_FOR_EACH (pfdb, hmap_node, &put_fdbs) {
+        run_put_fdb(ovnsb_idl_txn, sbrec_datapath_binding_by_key,
+                    sbrec_port_binding_by_key,
+                    sbrec_fdb_by_mac, pfdb);
+    }
+    flush_put_fdbs();
+}
+
+
+static void
+wait_put_fdbs(struct ovsdb_idl_txn *ovnsb_idl_txn)
+{
+    if (ovnsb_idl_txn && !hmap_is_empty(&put_fdbs)) {
+        poll_immediate_wake();
+    }
 }
