@@ -386,7 +386,7 @@ ALL_LOCAL += flake8-check
 #   H233 Python 3.x incompatible use of print operator
 #   H238 old style class declaration, use new style (inherit from `object`)
 FLAKE8_SELECT = H231,H232,H233,H238
-FLAKE8_IGNORE = E121,E123,E125,E126,E127,E128,E129,E131,E722,W503,F811,D,H,I
+FLAKE8_IGNORE = E121,E123,E125,E126,E127,E128,E129,E131,E722,W503,F811,D,H,I,W504,W605,E741
 flake8-check: $(FLAKE8_PYFILES)
 	$(FLAKE8_WERROR)$(AM_V_GEN) \
 	  src='$^' && \
