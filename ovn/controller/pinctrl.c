@@ -147,6 +147,10 @@ static struct pinctrl pinctrl;
 
 static void init_buffered_packets_map(void);
 static void destroy_buffered_packets_map(void);
+static void
+run_buffered_binding(struct controller_ctx *ctx,
+                     const struct hmap *local_datapaths)
+    OVS_REQUIRES(pinctrl_mutex);
 
 static void pinctrl_handle_put_mac_binding(const struct flow *md,
                                            const struct flow *headers,
@@ -158,8 +162,6 @@ static void run_put_mac_bindings(struct controller_ctx *)
     OVS_REQUIRES(pinctrl_mutex);
 static void wait_put_mac_bindings(struct controller_ctx *);
 static void flush_put_mac_bindings(void);
-static void buffer_put_mac_bindings(void);
-static void destroy_buffered_mac_bindings(void);
 static void send_mac_binding_buffered_pkts(struct rconn *swconn)
     OVS_REQUIRES(pinctrl_mutex);
 
@@ -306,6 +308,7 @@ struct buffered_packets {
 
     /* key */
     struct in6_addr ip;
+    struct eth_addr ea;
 
     long long int timestamp;
 
@@ -314,15 +317,17 @@ struct buffered_packets {
 };
 
 static struct hmap buffered_packets_map;
+static struct hmap buffered_mac_bindings;
 
 static void
 init_buffered_packets_map(void)
 {
     hmap_init(&buffered_packets_map);
+    hmap_init(&buffered_mac_bindings);
 }
 
 static void
-destroy_buffered_packets(struct buffered_packets *bp)
+destroy_buffered_packets(struct buffered_packets *bp, struct hmap *map)
 {
     struct buffer_info *bi;
 
@@ -333,7 +338,7 @@ destroy_buffered_packets(struct buffered_packets *bp)
 
         bp->head = (bp->head + 1) % BUFFER_QUEUE_DEPTH;
     }
-    hmap_remove(&buffered_packets_map, &bp->hmap_node);
+    hmap_remove(map, &bp->hmap_node);
     free(bp);
 }
 
@@ -342,9 +347,14 @@ destroy_buffered_packets_map(void)
 {
     struct buffered_packets *bp, *next;
     HMAP_FOR_EACH_SAFE (bp, next, hmap_node, &buffered_packets_map) {
-        destroy_buffered_packets(bp);
+        destroy_buffered_packets(bp, &buffered_packets_map);
     }
     hmap_destroy(&buffered_packets_map);
+
+    HMAP_FOR_EACH_SAFE (bp, next, hmap_node, &buffered_mac_bindings) {
+        destroy_buffered_packets(bp, &buffered_mac_bindings);
+    }
+    hmap_destroy(&buffered_mac_bindings);
 }
 
 static void
@@ -411,7 +421,7 @@ buffered_packets_map_gc(void)
 
     HMAP_FOR_EACH_SAFE (cur_qp, next_qp, hmap_node, &buffered_packets_map) {
         if (now > cur_qp->timestamp + BUFFER_MAP_TIMEOUT) {
-            destroy_buffered_packets(cur_qp);
+            destroy_buffered_packets(cur_qp, &buffered_packets_map);
         }
     }
 }
@@ -1544,7 +1554,6 @@ pinctrl_handler(void *arg_)
             }
         }
 
-        buffered_packets_map_gc();
         rconn_run_wait(swconn);
         rconn_recv_wait(swconn);
         send_garp_wait(send_garp_time);
@@ -1587,6 +1596,7 @@ pinctrl_run(struct controller_ctx *ctx,
                       local_datapaths, active_tunnels);
     prepare_ipv6_ras(ctx, local_datapaths);
     sync_dns_cache(ctx);
+    run_buffered_binding(ctx, local_datapaths);
     ovs_mutex_unlock(&pinctrl_mutex);
 }
 
@@ -1930,7 +1940,6 @@ pinctrl_destroy(void)
     destroy_ipv6_ras();
     destroy_buffered_packets_map();
     destroy_put_mac_bindings();
-    destroy_buffered_mac_bindings();
     destroy_dns_cache();
     seq_destroy(pinctrl_main_seq);
     seq_destroy(pinctrl_handler_seq);
@@ -1964,13 +1973,11 @@ struct put_mac_binding {
 
 /* Contains "struct put_mac_binding"s. */
 static struct hmap put_mac_bindings;
-static struct hmap buffered_mac_bindings;
 
 static void
 init_put_mac_bindings(void)
 {
     hmap_init(&put_mac_bindings);
-    hmap_init(&buffered_mac_bindings);
 }
 
 static void
@@ -1978,17 +1985,6 @@ destroy_put_mac_bindings(void)
 {
     flush_put_mac_bindings();
     hmap_destroy(&put_mac_bindings);
-}
-
-static void
-destroy_buffered_mac_bindings(void)
-{
-    struct put_mac_binding *pmb;
-    HMAP_FOR_EACH_POP (pmb, hmap_node, &buffered_mac_bindings) {
-       free(pmb);
-    }
-
-    hmap_destroy(&buffered_mac_bindings);
 }
 
 static struct put_mac_binding *
@@ -2053,17 +2049,10 @@ static void
 send_mac_binding_buffered_pkts(struct rconn *swconn)
     OVS_REQUIRES(pinctrl_mutex)
 {
-    struct put_mac_binding *pmb;
     struct buffered_packets *bp;
-    HMAP_FOR_EACH_POP (pmb, hmap_node, &buffered_mac_bindings) {
-        uint32_t bhash = hash_bytes(&pmb->ip_key, sizeof pmb->ip_key, 0);
-
-        bp = pinctrl_find_buffered_packets(&pmb->ip_key, bhash);
-        if (bp) {
-            buffered_send_packets(swconn, bp, &pmb->mac);
-        }
-
-        free(pmb);
+    HMAP_FOR_EACH_POP (bp, hmap_node, &buffered_mac_bindings) {
+        buffered_send_packets(swconn, bp, &bp->ea);
+        free(bp);
     }
 }
 
@@ -2131,12 +2120,67 @@ run_put_mac_bindings(struct controller_ctx *ctx)
     HMAP_FOR_EACH (pmb, hmap_node, &put_mac_bindings) {
         run_put_mac_binding(ctx, pmb);
     }
+}
 
-    /* Move the mac bindings from 'put_mac_bindings' hmap to
-     * 'buffered_mac_bindings' and notify the pinctrl_handler.
-     * pinctrl_handler will reinject the buffered packets. */
-    if (!hmap_is_empty(&put_mac_bindings)) {
-        buffer_put_mac_bindings();
+static const struct sbrec_mac_binding *
+mac_binding_lookup(struct controller_ctx *ctx,
+                   const struct sbrec_port_binding *pb,
+                   const char *ip)
+{
+    const struct sbrec_mac_binding *b;
+    SBREC_MAC_BINDING_FOR_EACH (b, ctx->ovnsb_idl) {
+        if (!strcmp(b->logical_port, pb->logical_port)
+            && !strcmp(b->ip, ip)) {
+            return b;
+        }
+    }
+    return NULL;
+}
+
+static void
+run_buffered_binding(struct controller_ctx *ctx,
+                     const struct hmap *local_datapaths)
+    OVS_REQUIRES(pinctrl_mutex)
+{
+    const struct local_datapath *ld;
+    bool notify = false;
+
+    HMAP_FOR_EACH (ld, hmap_node, local_datapaths) {
+        struct ovsdb_idl_index_cursor cursor;
+        struct sbrec_port_binding *target;
+
+        target = sbrec_port_binding_index_init_row(ctx->ovnsb_idl,
+                                                   &sbrec_table_port_binding);
+        sbrec_port_binding_index_set_datapath(target, ld->datapath);
+        ovsdb_idl_initialize_cursor(ctx->ovnsb_idl, &sbrec_table_port_binding,
+                                    "lport-by-datapath", &cursor);
+
+        const struct sbrec_port_binding *pb;
+        SBREC_PORT_BINDING_FOR_EACH_EQUAL (pb, &cursor, target) {
+            struct buffered_packets *cur_qp, *next_qp;
+            HMAP_FOR_EACH_SAFE (cur_qp, next_qp, hmap_node,
+                                &buffered_packets_map) {
+                struct ds ip_s = DS_EMPTY_INITIALIZER;
+                ipv6_format_mapped(&cur_qp->ip, &ip_s);
+                const struct sbrec_mac_binding *b =
+                    mac_binding_lookup(ctx, pb, ds_cstr(&ip_s));
+                if (b && ovs_scan(b->mac, ETH_ADDR_SCAN_FMT,
+                                  ETH_ADDR_SCAN_ARGS(cur_qp->ea))) {
+                    uint32_t hash = hash_bytes(&cur_qp->ip,
+                                               sizeof cur_qp->ip, 0);
+                    hmap_remove(&buffered_packets_map, &cur_qp->hmap_node);
+                    hmap_insert(&buffered_mac_bindings, &cur_qp->hmap_node,
+                                hash);
+                    notify = true;
+                }
+                ds_destroy(&ip_s);
+            }
+        }
+        sbrec_port_binding_index_destroy_row(target);
+    }
+    buffered_packets_map_gc();
+
+    if (notify) {
         notify_pinctrl_handler();
     }
 }
@@ -2146,17 +2190,6 @@ wait_put_mac_bindings(struct controller_ctx *ctx)
 {
     if (ctx->ovnsb_idl_txn && !hmap_is_empty(&put_mac_bindings)) {
         poll_immediate_wake();
-    }
-}
-
-static void
-buffer_put_mac_bindings(void)
-{
-    struct put_mac_binding *pmb;
-    HMAP_FOR_EACH_POP (pmb, hmap_node, &put_mac_bindings) {
-        uint32_t hash = hash_bytes(&pmb->ip_key, sizeof pmb->ip_key,
-                                   hash_2words(pmb->dp_key, pmb->port_key));
-        hmap_insert(&buffered_mac_bindings, &pmb->hmap_node, hash);
     }
 }
 
