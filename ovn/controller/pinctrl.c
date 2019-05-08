@@ -305,6 +305,7 @@ struct buffer_info {
 #define BUFFER_QUEUE_DEPTH     4
 struct buffered_packets {
     struct hmap_node hmap_node;
+    struct ovs_list list;
 
     /* key */
     struct in6_addr ip;
@@ -317,17 +318,17 @@ struct buffered_packets {
 };
 
 static struct hmap buffered_packets_map;
-static struct hmap buffered_mac_bindings;
+static struct ovs_list buffered_mac_bindings;
 
 static void
 init_buffered_packets_map(void)
 {
     hmap_init(&buffered_packets_map);
-    hmap_init(&buffered_mac_bindings);
+    ovs_list_init(&buffered_mac_bindings);
 }
 
 static void
-destroy_buffered_packets(struct buffered_packets *bp, struct hmap *map)
+destroy_buffered_packets(struct buffered_packets *bp)
 {
     struct buffer_info *bi;
 
@@ -338,8 +339,6 @@ destroy_buffered_packets(struct buffered_packets *bp, struct hmap *map)
 
         bp->head = (bp->head + 1) % BUFFER_QUEUE_DEPTH;
     }
-    hmap_remove(map, &bp->hmap_node);
-    free(bp);
 }
 
 static void
@@ -347,14 +346,16 @@ destroy_buffered_packets_map(void)
 {
     struct buffered_packets *bp, *next;
     HMAP_FOR_EACH_SAFE (bp, next, hmap_node, &buffered_packets_map) {
-        destroy_buffered_packets(bp, &buffered_packets_map);
+        destroy_buffered_packets(bp);
+        hmap_remove(&buffered_packets_map, &bp->hmap_node);
+        free(bp);
     }
     hmap_destroy(&buffered_packets_map);
 
-    HMAP_FOR_EACH_SAFE (bp, next, hmap_node, &buffered_mac_bindings) {
-        destroy_buffered_packets(bp, &buffered_mac_bindings);
+    LIST_FOR_EACH_POP (bp, list, &buffered_mac_bindings) {
+        destroy_buffered_packets(bp);
+        free(bp);
     }
-    hmap_destroy(&buffered_mac_bindings);
 }
 
 static void
@@ -421,7 +422,9 @@ buffered_packets_map_gc(void)
 
     HMAP_FOR_EACH_SAFE (cur_qp, next_qp, hmap_node, &buffered_packets_map) {
         if (now > cur_qp->timestamp + BUFFER_MAP_TIMEOUT) {
-            destroy_buffered_packets(cur_qp, &buffered_packets_map);
+            destroy_buffered_packets(cur_qp);
+            hmap_remove(&buffered_packets_map, &cur_qp->hmap_node);
+            free(cur_qp);
         }
     }
 }
@@ -2050,10 +2053,11 @@ send_mac_binding_buffered_pkts(struct rconn *swconn)
     OVS_REQUIRES(pinctrl_mutex)
 {
     struct buffered_packets *bp;
-    HMAP_FOR_EACH_POP (bp, hmap_node, &buffered_mac_bindings) {
+    LIST_FOR_EACH_POP (bp, list, &buffered_mac_bindings) {
         buffered_send_packets(swconn, bp, &bp->ea);
         free(bp);
     }
+    ovs_list_init(&buffered_mac_bindings);
 }
 
 static void
@@ -2166,11 +2170,8 @@ run_buffered_binding(struct controller_ctx *ctx,
                     mac_binding_lookup(ctx, pb, ds_cstr(&ip_s));
                 if (b && ovs_scan(b->mac, ETH_ADDR_SCAN_FMT,
                                   ETH_ADDR_SCAN_ARGS(cur_qp->ea))) {
-                    uint32_t hash = hash_bytes(&cur_qp->ip,
-                                               sizeof cur_qp->ip, 0);
                     hmap_remove(&buffered_packets_map, &cur_qp->hmap_node);
-                    hmap_insert(&buffered_mac_bindings, &cur_qp->hmap_node,
-                                hash);
+                    ovs_list_push_back(&buffered_mac_bindings, &cur_qp->list);
                     notify = true;
                 }
                 ds_destroy(&ip_s);
@@ -2728,7 +2729,7 @@ may_inject_pkts(void)
 {
     return (!shash_is_empty(&ipv6_ras) ||
             !shash_is_empty(&send_garp_data) ||
-            !hmap_is_empty(&buffered_mac_bindings));
+            !ovs_list_is_empty(&buffered_mac_bindings));
 }
 
 static void
