@@ -3635,4 +3635,33 @@ tcp.flags = RST;
       The destination port bindings for this IGMP group.
     </column>
   </table>
+
+  <table name="Service_Monitor">
+    <p>
+    </p>
+    <column name="ip">
+      Name of the <ref table="HA_Chassis_Group"/>. Name should be unique.
+    </column>
+
+    <column name="type">
+    </column>
+
+    <column name="port">
+    </column>
+
+    <column name="logical_port">
+    </column>
+
+    <column name="status">
+    </column>
+
+    <column name="options">
+    </column>
+
+    <group title="Common Columns">
+      <column name="external_ids">
+        See <em>External IDs</em> at the beginning of this document.
+      </column>
+    </group>
+  </table>
 </database>
