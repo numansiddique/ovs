@@ -1223,6 +1223,33 @@
       </p>
     </column>
 
+    <column name="health_check">
+      Enable health check or not.
+    </column>
+
+    <column name="ip_port_mappings">
+      IP to port mappings.
+    </column>
+
+    <group title="Common Columns">
+      <column name="external_ids">
+        See <em>External IDs</em> at the beginning of this document.
+      </column>
+    </group>
+  </table>
+
+  <table name="Load_Balancer_Health_Check" title="load balancer">
+    <p>
+      Each row represents one load balancer health check.
+    </p>
+
+    <column name="vip">
+    </column>
+
+    <column name="options">
+      IP to port mappings.
+    </column>
+
     <group title="Common Columns">
       <column name="external_ids">
         See <em>External IDs</em> at the beginning of this document.
