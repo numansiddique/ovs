@@ -76,6 +76,13 @@ static struct eth_addr mac_prefix;
 
 static bool controller_event_en;
 
+/* MAC allocated for monitor service usage. Just one mac is allocated
+ * for this purpose and ovn-controller's on each chassis will make use
+ * of this mac when sending out the packets to monitor the services
+ * defined in Service_Monitor Southbound table. Since these packets
+ * all locally handled, having just one mac is good enough. */
+static struct eth_addr monitor_svc_mac;
+
 #define MAX_OVN_TAGS 4096
 
 /* Pipeline stages. */
@@ -5558,6 +5565,22 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                       ds_cstr(&match), ds_cstr(&actions));
     }
 
+    char *svc_check_match = xasprintf("eth.dst == "ETH_ADDR_FMT,
+                                      ETH_ADDR_ARGS(monitor_svc_mac));
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbs) {
+            continue;
+        }
+
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_LKUP, 100, "eth.mcast",
+                      "outport = \""MC_FLOOD"\"; output;");
+
+
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_LKUP, 100, svc_check_match,
+                     "handle_svc_check(inport);");
+    }
+    free(svc_check_match);
+
     /* Ingress table 17: Destination lookup, unicast handling (priority 50), */
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbsp || lsp_is_external(op->nbsp)) {
@@ -8850,16 +8873,37 @@ ovnnb_db_run(struct northd_context *ctx,
                      &addr.ea[0], &addr.ea[1], &addr.ea[2])) {
             mac_prefix = addr;
         }
-    } else {
+    }
+
+    const char *monitor_svc_mac_str = smap_get(&nb->options, "monitor_svc_mac");
+    if (monitor_svc_mac_str) {
+        struct eth_addr addr;
+        memset(&addr, 0, sizeof addr);
+        if (eth_addr_from_string(monitor_svc_mac_str, &addr)) {
+            monitor_svc_mac = addr;
+        }
+    }
+
+    if (!mac_addr_prefix || !monitor_svc_mac_str) {
         struct smap options;
-
         smap_clone(&options, &nb->options);
-        eth_addr_random(&mac_prefix);
-        memset(&mac_prefix.ea[3], 0, 3);
 
-        smap_add_format(&options, "mac_prefix",
-                        "%02"PRIx8":%02"PRIx8":%02"PRIx8,
-                        mac_prefix.ea[0], mac_prefix.ea[1], mac_prefix.ea[2]);
+        if (!mac_addr_prefix) {
+            eth_addr_random(&mac_prefix);
+            memset(&mac_prefix.ea[3], 0, 3);
+
+            smap_add_format(&options, "mac_prefix",
+                            "%02"PRIx8":%02"PRIx8":%02"PRIx8,
+                            mac_prefix.ea[0], mac_prefix.ea[1],
+                            mac_prefix.ea[2]);
+        }
+
+        if (!monitor_svc_mac_str) {
+            eth_addr_random(&monitor_svc_mac);
+            smap_add_format(&options, "monitor_svc_mac", ETH_ADDR_FMT,
+                            ETH_ADDR_ARGS(monitor_svc_mac));
+        }
+
         nbrec_nb_global_verify_options(nb);
         nbrec_nb_global_set_options(nb, &options);
 
