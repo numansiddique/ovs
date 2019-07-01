@@ -32,7 +32,8 @@ struct shash;
 
 /* Interface for OVN main loop. */
 void ofctrl_init(struct ovn_extend_table *group_table,
-                 struct ovn_extend_table *meter_table);
+                 struct ovn_extend_table *meter_table,
+                 int inactivity_probe_interval);
 enum mf_field_id ofctrl_run(const struct ovsrec_bridge *br_int,
                             struct shash *pending_ct_zones);
 bool ofctrl_can_put(void);
@@ -62,5 +63,6 @@ void ofctrl_check_and_add_flow(struct hmap *desired_flows, uint8_t table_id,
                                bool log_duplicate_flow);
 
 bool ofctrl_is_connected(void);
+void ofctrl_set_probe_interval(int probe_interval);
 
 #endif /* ovn/ofctrl.h */
