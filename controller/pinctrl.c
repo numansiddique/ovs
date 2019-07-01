@@ -273,6 +273,16 @@ static void pinctrl_ip_mcast_handle_igmp(
 
 static bool may_inject_pkts(void);
 
+static void init_svc_monitors(void);
+static void destroy_svc_monitors(void);
+static void sync_svc_monitors(
+    const struct sbrec_service_monitor_table *svc_mon_table,
+    struct ovsdb_idl_index *sbrec_port_binding_by_name,
+    const struct sbrec_chassis *our_chassis);
+static void svc_monitors_run(struct rconn *swconn,
+                             long long int *send_monitor_time)
+    OVS_REQUIRES(pinctrl_mutex);
+
 COVERAGE_DEFINE(pinctrl_drop_put_mac_binding);
 COVERAGE_DEFINE(pinctrl_drop_buffered_packets_map);
 COVERAGE_DEFINE(pinctrl_drop_controller_event);
@@ -432,6 +442,7 @@ pinctrl_init(void)
     init_buffered_packets_map();
     init_event_table();
     ip_mcast_snoop_init();
+    init_svc_monitors();
     pinctrl.br_int_name = NULL;
     pinctrl_handler_seq = seq_create();
     pinctrl_main_seq = seq_create();
@@ -2026,6 +2037,7 @@ pinctrl_handler(void *arg_)
     static long long int send_garp_time = LLONG_MAX;
     /* Next multicast query (IGMP) in ms. */
     static long long int send_mcast_query_time = LLONG_MAX;
+    static long long int send_monitor_time = LLONG_MAX;
 
     swconn = rconn_create(5, 0, DSCP_DEFAULT, 1 << OFP13_VERSION);
 
@@ -2086,6 +2098,7 @@ pinctrl_handler(void *arg_)
             }
         }
 
+        svc_monitors_run(swconn, &send_monitor_time);
         rconn_run_wait(swconn);
         rconn_recv_wait(swconn);
         send_garp_wait(send_garp_time);
@@ -2097,6 +2110,7 @@ pinctrl_handler(void *arg_)
 
         latch_wait(&pctrl->pinctrl_thread_exit);
         poll_block();
+        VLOG_INFO("NUMS : %s: %d : pinctrl thread : came out of block", __FUNCTION__, __LINE__);
     }
 
     free(br_int_name);
@@ -2116,6 +2130,7 @@ pinctrl_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
             struct ovsdb_idl_index *sbrec_ip_multicast_opts,
             const struct sbrec_dns_table *dns_table,
             const struct sbrec_controller_event_table *ce_table,
+            const struct sbrec_service_monitor_table *svc_mon_table,
             const struct ovsrec_bridge *br_int,
             const struct sbrec_chassis *chassis,
             const struct hmap *local_datapaths,
@@ -2147,6 +2162,7 @@ pinctrl_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
                   sbrec_port_binding_by_key,
                   sbrec_igmp_groups,
                   sbrec_ip_multicast_opts);
+    sync_svc_monitors(svc_mon_table, sbrec_port_binding_by_name, chassis);
     run_buffered_binding(sbrec_port_binding_by_datapath,
                          sbrec_mac_binding_by_lport_ip,
                          local_datapaths);
@@ -2500,6 +2516,7 @@ pinctrl_destroy(void)
     destroy_put_mac_bindings();
     destroy_dns_cache();
     ip_mcast_snoop_destroy();
+    destroy_svc_monitors();
     seq_destroy(pinctrl_main_seq);
     seq_destroy(pinctrl_handler_seq);
 }
@@ -4340,4 +4357,287 @@ pinctrl_handle_event(struct ofpbuf *userdata)
     default:
         return;
     }
+enum svc_monitor_state {
+    SVC_MON_S_INIT,
+    SVC_MON_S_PROBE_SENT,
+    SVC_MON_S_WAITING,
+    SVC_MON_S_ONLINE,
+    SVC_MON_S_OFFLINE,
+    SVC_MON_S_ERR,
+};
+
+enum svc_monitor_status {
+    SVC_MON_ST_OFFLINE,
+    SVC_MON_ST_ONLINE,
+    SVC_MON_ST_ERR,
+};
+
+enum svc_monitor_protocol {
+    SVC_MON_PROTO_TCP,
+    SVC_MON_PROTO_UDP,
+};
+
+/* Service monitor health checks. */
+struct svc_monitor {
+    struct hmap_node hmap_node;
+    struct ovs_list list_node;
+
+    /* key */
+    struct in6_addr ip;
+    uint32_t dp_key;
+    uint32_t port_key;
+    uint32_t proto_port; /* tcp/udp port */
+
+    struct eth_addr ea;
+    long long int timestamp;
+    bool is_ip6;
+
+    struct smap options;
+    enum svc_monitor_protocol protocol;
+    enum svc_monitor_state state;
+    enum svc_monitor_status status;
+    struct dp_packet pkt;
+    bool delete;
+};
+
+static struct hmap svc_monitors_map;
+static struct ovs_list svc_monitors;
+
+static void
+init_svc_monitors(void)
+{
+    hmap_init(&svc_monitors_map);
+    ovs_list_init(&svc_monitors);
+}
+
+static void
+destroy_svc_monitors(void)
+{
+    struct svc_monitor *svc;
+    HMAP_FOR_EACH_POP (svc, hmap_node, &svc_monitors_map) {
+
+    }
+
+    hmap_destroy(&svc_monitors_map);
+
+    LIST_FOR_EACH_POP (svc, list_node, &svc_monitors) {
+        smap_destroy(&svc->options);
+        free(svc);
+    }
+}
+
+
+static struct svc_monitor *
+pinctrl_find_svc_monitor(uint32_t dp_key, uint32_t port_key,
+                                const struct in6_addr *ip_key, uint32_t port,
+                                uint32_t hash)
+{
+    struct svc_monitor *svc;
+    HMAP_FOR_EACH_WITH_HASH (svc, hmap_node, hash, &svc_monitors_map) {
+        if (svc->dp_key == dp_key
+            && svc->port_key == port_key
+            && svc->proto_port == port
+            && IN6_ARE_ADDR_EQUAL(&svc->ip, ip_key)) {
+            return svc;
+        }
+    }
+    return NULL;
+}
+
+static void
+sync_svc_monitors(const struct sbrec_service_monitor_table *svc_mon_table,
+                  struct ovsdb_idl_index *sbrec_port_binding_by_name,
+                  const struct sbrec_chassis *our_chassis)
+    OVS_REQUIRES(pinctrl_mutex)
+{
+    VLOG_INFO("<------- SIDD : %s : %d entered ----->", __FUNCTION__, __LINE__);
+    bool changed = false;
+    struct svc_monitor *svc_mon;
+
+    LIST_FOR_EACH (svc_mon, list_node, &svc_monitors) {
+        svc_mon->delete = true;
+    }
+
+    const struct sbrec_service_monitor *sb_svc_mon;
+    SBREC_SERVICE_MONITOR_TABLE_FOR_EACH (sb_svc_mon, svc_mon_table) {
+        const struct sbrec_port_binding *pb
+            = lport_lookup_by_name(sbrec_port_binding_by_name,
+                                   sb_svc_mon->logical_port);
+        if (!pb) {
+            continue;
+        }
+
+        if (pb->chassis != our_chassis) {
+            continue;
+        }
+
+        struct in6_addr ip_addr;
+        ovs_be32 ip4;
+        bool is_ip6 = false;
+        if (ip_parse(sb_svc_mon->ip, &ip4)) {
+            ip_addr = in6_addr_mapped_ipv4(ip4);
+        } else if (ipv6_parse(sb_svc_mon->ip, &ip_addr)){
+            is_ip6 = true;
+        } else {
+            continue;
+        }
+
+        struct eth_addr ea;
+        bool mac_found = false;
+        for (size_t i = 0; i < pb->n_mac; i++) {
+            struct lport_addresses laddrs;
+            if (!extract_lsp_addresses(pb->mac[i], &laddrs)) {
+                continue;
+            }
+
+            if (!is_ip6) {
+                for (size_t j = 0; j < laddrs.n_ipv4_addrs; j++) {
+                    if (ip4 == laddrs.ipv4_addrs[j].addr) {
+                        ea = laddrs.ea;
+                        mac_found = true;
+                        break;
+                    }
+                }
+            } else {
+                for (size_t j = 0; j < laddrs.n_ipv6_addrs; j++) {
+                    if (ipv6_addr_equals(&ip_addr, &laddrs.ipv6_addrs[j].addr)) {
+                        ea = laddrs.ea;
+                        mac_found = true;
+                        break;
+                    }
+                }
+            }
+
+            if (mac_found) {
+                break;
+            }
+        }
+
+        if (!mac_found) {
+            continue;
+        }
+
+        uint32_t dp_key = pb->datapath->tunnel_key;
+        uint32_t port_key = pb->tunnel_key;
+        uint32_t hash =
+            hash_bytes(&ip_addr, sizeof ip_addr,
+                       hash_3words(dp_key, port_key, sb_svc_mon->port));
+
+
+        svc_mon = pinctrl_find_svc_monitor(dp_key, port_key, &ip_addr,
+                                           sb_svc_mon->port, hash);
+
+        if (!svc_mon) {
+            svc_mon = xmalloc(sizeof *svc_mon);
+            svc_mon->dp_key = dp_key;
+            svc_mon->port_key = port_key;
+            svc_mon->proto_port = sb_svc_mon->port;
+            svc_mon->ip = ip_addr;
+            svc_mon->is_ip6 = is_ip6;
+            svc_mon->state = SVC_MON_S_INIT;
+            svc_mon->status = SVC_MON_ST_OFFLINE;
+
+            if (strcmp(sb_svc_mon->type, "udp")) {
+                svc_mon->protocol = SVC_MON_PROTO_TCP;
+            } else {
+                svc_mon->protocol = SVC_MON_PROTO_UDP;
+            }
+
+            smap_init(&svc_mon->options);
+            hmap_insert(&svc_monitors_map, &svc_mon->hmap_node, hash);
+            ovs_list_push_back(&svc_monitors, &svc_mon->list_node);
+            changed = true;
+            VLOG_INFO("<------- SIDD : %s : %d : adding svc_mon : port = [%u] ----->", __FUNCTION__, __LINE__, svc_mon->proto_port);
+            VLOG_INFO(" IP OF SVC_MON = "IP_FMT" : ", IP_ARGS(ip4));
+
+        }
+
+        svc_mon->ea = ea;
+        if (!smap_equal(&svc_mon->options, &sb_svc_mon->options)) {
+            smap_destroy(&svc_mon->options);
+            smap_clone(&svc_mon->options, &sb_svc_mon->options);
+            changed = true;
+        }
+
+        svc_mon->delete = false;
+    }
+
+    struct svc_monitor *next;
+    LIST_FOR_EACH_SAFE (svc_mon, next, list_node, &svc_monitors) {
+        if (svc_mon->delete) {
+            hmap_remove(&svc_monitors_map, &svc_mon->hmap_node);
+            ovs_list_remove(&svc_mon->list_node);
+            smap_destroy(&svc_mon->options);
+            free(svc_mon);
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        notify_pinctrl_handler();
+    }
+    VLOG_INFO("<---- SIDD : %s : %d exiting ----->", __FUNCTION__, __LINE__);
+}
+
+static void
+svc_monitor_send_health_check(struct svc_monitor *svc_mon)
+{
+    /* Compose a TCP-SYN packet. */
+    uint64_t packet_stub[128 / 8];
+    struct dp_packet packet;
+    dp_packet_use_stub(&packet, packet_stub, sizeof packet_stub);
+    compose_arp__(&packet);
+
+}
+
+static void
+svc_monitors_run(struct rconn *swconn OVS_UNUSED,
+                 long long int *send_monitor_time OVS_UNUSED)
+    OVS_REQUIRES(pinctrl_mutex)
+{
+    VLOG_INFO("NUMS : %s : %d entered", __FUNCTION__, __LINE__);
+
+    struct svc_monitor *svc_mon;
+    LIST_FOR_EACH (svc_mon, list_node, &svc_monitors) {
+        char ip_[INET6_ADDRSTRLEN + 1];
+        memset(ip_, 0, INET6_ADDRSTRLEN + 1);
+        ipv6_string_mapped(ip_, &svc_mon->ip);
+
+        VLOG_INFO("NUMS : %s : %d :need to monitor the service for IP :[%s] : port = [%d]",
+                  __FUNCTION__, __LINE__, ip_, svc_mon->proto_port);
+
+        switch (svc_mon->state) {
+        case SVC_MON_S_INIT:
+            svc_monitor_send_health_check(svc_mon);
+            break;
+
+        case SVC_MON_S_WAITING:
+            if (time_msec() > svc_mon->wait_time) {
+                svc_mon->state = SVC_MON_S_OFFLINE;
+            }
+            break;
+
+        case SVC_MON_S_ONLINE:
+            svc_mon->status = SVC_MON_ST_ONLINE;
+            if (time_msec() >= svc_mon->next_send_time) {
+                svc_monitor_send_health_check(svc_mon);
+            }
+            break;
+
+        case SVC_MON_S_OFFLINE:
+            svc_mon->status = SVC_MON_ST_OFFLINE;
+            if (time_msec() >= svc_mon->next_send_time) {
+                svc_monitor_send_health_check(svc_mon);
+            }
+            break;
+
+        case SVC_MON_S_ERR:
+            break;
+
+        default:
+            OVS_NOT_REACHED();
+        }
+    }
+
+    VLOG_INFO("<-----  NUMS : %s : %d Exiting ----->", __FUNCTION__, __LINE__);
 }
