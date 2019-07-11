@@ -70,6 +70,7 @@ static void consider_logical_flow(
     struct hmap *dhcp_opts,
     struct hmap *dhcpv6_opts,
     struct hmap *nd_ra_opts,
+    struct controller_event_options *controller_event_opts,
     const struct shash *addr_sets,
     const struct shash *port_groups,
     const struct sset *active_tunnels,
@@ -173,19 +174,23 @@ add_logical_flows(
     struct hmap nd_ra_opts = HMAP_INITIALIZER(&nd_ra_opts);
     nd_ra_opts_init(&nd_ra_opts);
 
+    struct controller_event_options controller_event_opts;
+    controller_event_opts_init(&controller_event_opts);
+
     SBREC_LOGICAL_FLOW_TABLE_FOR_EACH (lflow, logical_flow_table) {
         consider_logical_flow(sbrec_multicast_group_by_name_datapath,
                               sbrec_port_binding_by_name,
                               lflow, local_datapaths,
                               chassis, &dhcp_opts, &dhcpv6_opts, &nd_ra_opts,
-                              addr_sets, port_groups, active_tunnels,
-                              local_lport_ids, &conj_id_ofs,
+                              &controller_event_opts, addr_sets, port_groups,
+                              active_tunnels, local_lport_ids, &conj_id_ofs,
                               flow_table, group_table, meter_table);
     }
 
     dhcp_opts_destroy(&dhcp_opts);
     dhcp_opts_destroy(&dhcpv6_opts);
     nd_ra_opts_destroy(&nd_ra_opts);
+    controller_event_opts_destroy(&controller_event_opts);
 }
 
 static void
@@ -198,6 +203,7 @@ consider_logical_flow(
     struct hmap *dhcp_opts,
     struct hmap *dhcpv6_opts,
     struct hmap *nd_ra_opts,
+    struct controller_event_options *controller_event_opts,
     const struct shash *addr_sets,
     const struct shash *port_groups,
     const struct sset *active_tunnels,
@@ -237,6 +243,7 @@ consider_logical_flow(
         .dhcp_opts = dhcp_opts,
         .dhcpv6_opts = dhcpv6_opts,
         .nd_ra_opts = nd_ra_opts,
+        .controller_event_opts = controller_event_opts,
 
         .pipeline = ingress ? OVNACT_P_INGRESS : OVNACT_P_EGRESS,
         .n_tables = LOG_PIPELINE_LEN,
