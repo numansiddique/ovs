@@ -291,15 +291,24 @@ test_parse_expr__(int steps)
         expr = expr_parse_string(ds_cstr(&input), &symtab, &addr_sets,
                                  &port_groups, NULL, &error);
         if (!error && steps > 0) {
+            printf("\nDisplaying the expression dude : expr_parse_string\n");
+            display_expr(expr, 1);
             expr = expr_annotate(expr, &symtab, &error);
+            printf("\n*************\n\nDisplaying after expr_annotate\n");
+            display_expr(expr, 1);
         }
         if (!error) {
             if (steps > 1) {
                 expr = expr_simplify(expr, is_chassis_resident_cb, &ports);
+                printf("\n***********************\n\nDisplaying after expr_simplify\n");
+                display_expr(expr, 1);
             }
             if (steps > 2) {
                 expr = expr_normalize(expr);
                 ovs_assert(expr_is_normalized(expr));
+                printf("\n******************\n\n\nDisplaying after expr_normalize\n");
+                display_expr(expr, 1);
+                printf("\n******************************END *******************\n\n");
             }
         }
         if (!error) {

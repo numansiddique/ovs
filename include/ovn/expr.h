@@ -515,4 +515,5 @@ void expr_const_sets_add(struct shash *const_sets, const char *name,
 void expr_const_sets_remove(struct shash *const_sets, const char *name);
 void expr_const_sets_destroy(struct shash *const_sets);
 
+void display_expr(struct expr *expr, int);
 #endif /* ovn/expr.h */

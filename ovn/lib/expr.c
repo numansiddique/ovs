@@ -3448,3 +3448,85 @@ expr_parse_microflow(const char *s, const struct shash *symtab,
     }
     return error;
 }
+
+static void
+display_expr_relop(enum expr_relop relop)
+{
+    switch(relop) {
+        case EXPR_R_EQ:
+            printf("\t\tEXPR_R_EQ\n");
+            break;
+        case EXPR_R_NE:
+            printf("\t\tEXPR_R_EQ\n");
+            break;
+        case EXPR_R_LT:
+            printf("\t\tEXPR_R_LT\n");
+            break;
+        case EXPR_R_LE:
+            printf("\t\tEXPR_R_LE\n");
+            break;
+        case EXPR_R_GT:
+            printf("\t\tEXPR_R_GT\n");
+            break;
+        case EXPR_R_GE:
+            printf("\t\tEXPR_R_GE\n");
+            break;
+    }
+}
+
+void
+display_expr(struct expr *expr, int level)
+{
+    printf("\n\ndisplay_expr entered DUDE : level = [%d]\n", level);
+    if (!expr) {
+        return;
+    }
+
+    struct expr *sub, *next;
+
+    switch (expr->type) {
+    case EXPR_T_CMP:
+        {
+        printf("EXPR_T_CMP : symbol = [%s] : parent size = [%lu]\n", expr->cmp.symbol->name, ovs_list_size(&expr->node));
+        display_expr_relop(expr->cmp.relop);
+        if (expr->cmp.string) {
+            printf("\t : [%s]\n", expr->cmp.string);
+        } else {
+            printf("\t : u8_val : [%x]", ntohl(expr->cmp.value.be32_int));
+        }
+#if 0
+        struct expr *s, *n;
+        LIST_FOR_EACH_SAFE (s, n, node, &expr->node) {
+            printf("Expression type of parent = [%u] : symbol = [%s]\n", s->type, s->cmp.symbol ? s->cmp.symbol->name : "NULL");
+            if (s->cmp.string) {
+                printf("\t : CRAP : PARENT : [%s]\n", s->cmp.string);
+            }
+        }
+#endif
+        }
+        break;
+
+    case EXPR_T_AND:
+        printf("EXPR_T_AND\n");
+        LIST_FOR_EACH_SAFE (sub, next, node, &expr->andor) {
+            display_expr(sub, level + 1);
+        }
+        printf("EXPR_T_AND DONE DUDE\n");
+        break;
+    case EXPR_T_OR:
+        printf("EXPR_T_OR\n");
+        LIST_FOR_EACH_SAFE (sub, next, node, &expr->andor) {
+            display_expr(sub, level + 1);
+        }
+        printf("EXPR_T_OR DONE DUDE\n");
+        break;
+
+    case EXPR_T_BOOLEAN:
+        printf("EXPR_T_BOOLEAN\n");
+        break;
+
+    case EXPR_T_CONDITION:
+        printf("EXPR_T_CONDITION\n");
+        break;
+    }
+}
