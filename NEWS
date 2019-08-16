@@ -64,6 +64,7 @@ v2.12.0 - 03 Sep 2019
        members of the same transport zone(s).
      * Support for IGMP Snooping and IGMP Querier.
      * Support for new logical switch port type - 'virtual'.
+     * Support for IGMP Snooping/Querier and Relay.
    - New QoS type "linux-netem" on Linux.
    - Added support for TLS Server Name Indication (SNI).
    - Linux datapath:
