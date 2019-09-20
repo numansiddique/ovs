@@ -74,8 +74,8 @@ EXTRA_DIST += \
 	debian/ovn-host.postinst \
 	debian/ovn-host.postrm \
 	debian/ovn-host.template \
-	debian/python-openvswitch.dirs \
-	debian/python-openvswitch.install \
+	debian/python3-openvswitch.dirs \
+	debian/python3-openvswitch.install \
 	debian/rules \
 	debian/rules.modules \
 	debian/ifupdown.sh \

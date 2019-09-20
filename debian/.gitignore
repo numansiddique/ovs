@@ -28,4 +28,5 @@
 /ovn-central
 /ovn-docker
 /python-openvswitch
+/python3-openvswitch
 /tmp
