@@ -149,7 +149,6 @@ AC_CONFIG_FILES([
     ofproto/libofproto.sym
     lib/libsflow.sym
     lib/libopenvswitch.sym
-    ovn/lib/libovn.sym
     vtep/libvtep.sym])
 
 OVS_ENABLE_OPTION([-Wall])
