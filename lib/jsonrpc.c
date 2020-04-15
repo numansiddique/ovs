@@ -198,7 +198,8 @@ static void
 jsonrpc_log_msg(const struct jsonrpc *rpc, const char *title,
                 const struct jsonrpc_msg *msg)
 {
-    if (VLOG_IS_DBG_ENABLED()) {
+    //if (VLOG_IS_DBG_ENABLED()) {
+    if (1) {
         struct ds s = DS_EMPTY_INITIALIZER;
         if (msg->method) {
             ds_put_format(&s, ", method=\"%s\"", msg->method);
@@ -219,7 +220,7 @@ jsonrpc_log_msg(const struct jsonrpc *rpc, const char *title,
             ds_put_cstr(&s, ", id=");
             json_to_ds(msg->id, 0, &s);
         }
-        VLOG_DBG("%s: %s %s%s", rpc->name, title,
+        VLOG_INFO("%s: %s %s%s", rpc->name, title,
                  jsonrpc_msg_type_to_string(msg->type), ds_cstr(&s));
         ds_destroy(&s);
     }
