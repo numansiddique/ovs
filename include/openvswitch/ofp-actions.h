@@ -674,10 +674,14 @@ ofpact_nest_get_action_len(const struct ofpact_nest *on)
  * If NX_CT_F_FORCE is set, in addition to NX_CT_F_COMMIT, then the conntrack
  * entry is replaced with a new one in case the original direction of the
  * existing entry is opposite of the current packet direction.
+ * If NX_CT_F_LOOKUP_INV is set, then an invalid packet (eg. out of tcp window)
+ * part of committed connection is looked up and the ct fields - ct_mark and
+ * ct_label are filled.
  */
 enum nx_conntrack_flags {
     NX_CT_F_COMMIT = 1 << 0,
     NX_CT_F_FORCE  = 1 << 1,
+    NX_CT_F_LOOKUP_INV = 1 << 2,
 };
 
 /* Magic value for struct nx_action_conntrack 'recirc_table' field, to specify

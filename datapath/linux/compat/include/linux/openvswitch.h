@@ -830,6 +830,9 @@ struct ovs_action_push_tnl {
  * respectively.  Remaining bits control the changes for which an event is
  * delivered on the NFNLGRP_CONNTRACK_UPDATE group.
  * @OVS_CT_ATTR_TIMEOUT: Variable length string defining conntrack timeout.
+ * @OVS_CT_ATTR_LOOKUP_INV: If present, looks up and sets the state, mark and
+ * labels for an invalid packet (eg. out of tcp window) if it is part of
+ * committed connection.
  */
 enum ovs_ct_attr {
 	OVS_CT_ATTR_UNSPEC,
@@ -844,6 +847,7 @@ enum ovs_ct_attr {
 	OVS_CT_ATTR_EVENTMASK,  /* u32 mask of IPCT_* events. */
 	OVS_CT_ATTR_TIMEOUT,    /* Associate timeout with this connection for
 				 * fine-grain timeout tuning. */
+	OVS_CT_ATTR_LOOKUP_INV, /* No argument. */
 
 	__OVS_CT_ATTR_MAX
 };

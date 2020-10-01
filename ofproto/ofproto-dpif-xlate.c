@@ -6210,6 +6210,10 @@ compose_conntrack_action(struct xlate_ctx *ctx, struct ofpact_conntrack *ofc,
             put_ct_timeout(ctx->odp_actions, ctx->xbridge->ofproto->backer,
                            &ctx->xin->flow, ctx->wc, zone);
         }
+    } else if (ofc->flags & NX_CT_F_LOOKUP_INV) {
+        if (ctx->xbridge->support.ct_lookup_inv) {
+            nl_msg_put_flag(ctx->odp_actions, OVS_CT_ATTR_LOOKUP_INV);
+        }
     }
     nl_msg_put_u16(ctx->odp_actions, OVS_CT_ATTR_ZONE, zone);
     put_ct_mark(&ctx->xin->flow, ctx->odp_actions, ctx->wc);

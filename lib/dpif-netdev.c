@@ -7863,6 +7863,9 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                     tp_id = DEFAULT_TP_ID;
                 }
                 break;
+            case OVS_CT_ATTR_LOOKUP_INV:
+                /* Userspace datapath does not support this yet. */
+                break;
             case OVS_CT_ATTR_NAT: {
                 const struct nlattr *b_nest;
                 unsigned int left_nest;

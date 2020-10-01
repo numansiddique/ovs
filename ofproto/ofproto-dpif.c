@@ -1329,11 +1329,13 @@ check_ct_clear(struct dpif_backer *backer)
     return supported;
 }
 
-/* Tests whether 'backer''s datapath supports the OVS_CT_ATTR_TIMEOUT
- * attribute in OVS_ACTION_ATTR_CT. */
 static bool
-check_ct_timeout_policy(struct dpif_backer *backer)
+check_ct_attr(struct dpif_backer *backer, enum ovs_ct_attr ct_attr)
 {
+    if (ct_attr != OVS_CT_ATTR_TIMEOUT && ct_attr != OVS_CT_ATTR_LOOKUP_INV) {
+        return false;
+    }
+
     struct dp_packet packet;
     struct ofpbuf actions;
     struct flow flow = {
@@ -1353,11 +1355,17 @@ check_ct_timeout_policy(struct dpif_backer *backer)
      * can decode the message.  */
     ofpbuf_init(&actions, 64);
     ct_start = nl_msg_start_nested(&actions, OVS_ACTION_ATTR_CT);
-    /* Timeout policy has no effect without the commit flag, but currently the
-     * datapath will accept a timeout policy even without commit.  This is
-     * useful as we do not want to persist the probe connection in the
-     * conntrack table. */
-    nl_msg_put_string(&actions, OVS_CT_ATTR_TIMEOUT, "ovs_test_tp");
+
+    if (ct_attr == OVS_CT_ATTR_TIMEOUT) {
+        /* Timeout policy has no effect without the commit flag, but currently
+         * the datapath will accept a timeout policy even without commit.  This
+         * is useful as we do not want to persist the probe connection in the
+        *  conntrack table. */
+        nl_msg_put_string(&actions, OVS_CT_ATTR_TIMEOUT, "ovs_test_tp");
+    } else {
+        nl_msg_put_flag(&actions, OVS_CT_ATTR_LOOKUP_INV);
+    }
+
     nl_msg_end_nested(&actions, ct_start);
 
     /* Compose a dummy UDP packet. */
@@ -1379,14 +1387,36 @@ check_ct_timeout_policy(struct dpif_backer *backer)
     ofpbuf_uninit(&actions);
 
     if (error) {
-        VLOG_INFO("%s: Datapath does not support timeout policy in conntrack "
-                  "action", dpif_name(backer->dpif));
+        VLOG_INFO("%s: Datapath does not support %s in conntrack "
+                  "action", dpif_name(backer->dpif),
+                  (ct_attr == OVS_CT_ATTR_TIMEOUT)
+                   ? "timeout policy"
+                   : "invalid packet lookup");
     } else {
-        VLOG_INFO("%s: Datapath supports timeout policy in conntrack action",
-                  dpif_name(backer->dpif));
+        VLOG_INFO("%s: Datapath supports %s in conntrack action",
+                  dpif_name(backer->dpif),
+                  (ct_attr == OVS_CT_ATTR_TIMEOUT)
+                   ? "timeout policy"
+                   : "invalid packet lookup");
     }
 
     return !error;
+}
+
+/* Tests whether 'backer''s datapath supports the OVS_CT_ATTR_TIMEOUT
+ * attribute in OVS_ACTION_ATTR_CT. */
+static bool
+check_ct_timeout_policy(struct dpif_backer *backer)
+{
+    return check_ct_attr(backer, OVS_CT_ATTR_TIMEOUT);
+}
+
+/* Tests whether 'backer''s datapath supports the OVS_CT_ATTR_LOOKUP_INV
+ * attribute in OVS_ACTION_ATTR_CT. */
+static bool
+check_ct_lookup_invalid(struct dpif_backer *backer)
+{
+    return check_ct_attr(backer, OVS_CT_ATTR_LOOKUP_INV);
 }
 
 /* Tests whether 'backer''s datapath supports the
@@ -1586,6 +1616,7 @@ check_support(struct dpif_backer *backer)
     backer->rt_support.max_hash_alg = check_max_dp_hash_alg(backer);
     backer->rt_support.check_pkt_len = check_check_pkt_len(backer);
     backer->rt_support.ct_timeout = check_ct_timeout_policy(backer);
+    backer->rt_support.ct_lookup_inv = check_ct_lookup_invalid(backer);
     backer->rt_support.explicit_drop_action =
         dpif_supports_explicit_drop_action(backer->dpif);
     backer->rt_support.lb_output_action=

@@ -945,6 +945,7 @@ static const struct nl_policy ovs_conntrack_policy[] = {
     [OVS_CT_ATTR_NAT] = { .type = NL_A_UNSPEC, .optional = true },
     [OVS_CT_ATTR_TIMEOUT] = { .type = NL_A_STRING, .optional = true,
                               .min_len = 1, .max_len = 32 },
+    [OVS_CT_ATTR_LOOKUP_INV] = { .type = NL_A_FLAG, .optional = true, },
 };
 
 static void
@@ -958,7 +959,7 @@ format_odp_conntrack_action(struct ds *ds, const struct nlattr *attr)
     const uint32_t *mark;
     const char *helper, *timeout;
     uint16_t zone;
-    bool commit, force;
+    bool commit, force, lookup_invalid;
     const struct nlattr *nat;
 
     if (!nl_parse_nested(attr, ovs_conntrack_policy, a, ARRAY_SIZE(a))) {
@@ -974,16 +975,21 @@ format_odp_conntrack_action(struct ds *ds, const struct nlattr *attr)
     helper = a[OVS_CT_ATTR_HELPER] ? nl_attr_get(a[OVS_CT_ATTR_HELPER]) : NULL;
     timeout = a[OVS_CT_ATTR_TIMEOUT] ?
                 nl_attr_get(a[OVS_CT_ATTR_TIMEOUT]) : NULL;
+    lookup_invalid = a[OVS_CT_ATTR_LOOKUP_INV] ? true : false;
     nat = a[OVS_CT_ATTR_NAT];
 
     ds_put_format(ds, "ct");
-    if (commit || force || zone || mark || label || helper || timeout || nat) {
+    if (commit || force || zone || mark || label || helper || timeout
+        || nat || lookup_invalid) {
         ds_put_cstr(ds, "(");
         if (commit) {
             ds_put_format(ds, "commit,");
         }
         if (force) {
             ds_put_format(ds, "force_commit,");
+        }
+        if (lookup_invalid) {
+            ds_put_format(ds, "lookup_invalid,");
         }
         if (zone) {
             ds_put_format(ds, "zone=%"PRIu16",", zone);
@@ -1957,6 +1963,7 @@ parse_conntrack_action(const char *s_, struct ofpbuf *actions)
         size_t helper_len = 0, timeout_len = 0;
         bool commit = false;
         bool force_commit = false;
+        bool lookup_invalid = false;
         uint16_t zone = 0;
         struct {
             uint32_t value;
@@ -2041,7 +2048,11 @@ find_end:
                     s += timeout_len;
                     continue;
                 }
-
+                if (ovs_scan(s, "lookup_invalid%n", &n)) {
+                    lookup_invalid = true;
+                    s += n;
+                    continue;
+                }
                 n = scan_ct_nat(s, &nat_params);
                 if (n > 0) {
                     s += n;
@@ -2084,6 +2095,9 @@ find_end:
         if (timeout) {
             nl_msg_put_string__(actions, OVS_CT_ATTR_TIMEOUT, timeout,
                                 timeout_len);
+        }
+        if (lookup_invalid) {
+            nl_msg_put_flag(actions, OVS_CT_ATTR_LOOKUP_INV);
         }
         if (have_nat) {
             nl_msg_put_ct_nat(&nat_params, actions);

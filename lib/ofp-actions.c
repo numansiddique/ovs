@@ -6592,6 +6592,12 @@ decode_NXAST_RAW_CT(const struct nx_action_conntrack *nac,
         goto out;
     }
 
+    if (conntrack->flags & NX_CT_F_LOOKUP_INV &&
+        (conntrack->flags & NX_CT_F_COMMIT)) {
+        error = OFPERR_OFPBAC_BAD_ARGUMENT;
+        goto out;
+    }
+
     error = decode_ct_zone(nac, conntrack, vl_mff_map, tlv_bitmap);
     if (error) {
         goto out;
@@ -6690,6 +6696,8 @@ parse_CT(char *arg, const struct ofpact_parse_params *pp)
             oc->flags |= NX_CT_F_COMMIT;
         } else if (!strcmp(key, "force")) {
             oc->flags |= NX_CT_F_FORCE;
+        } else if (!strcmp(key, "lookup_invalid")) {
+            oc->flags |= NX_CT_F_LOOKUP_INV;
         } else if (!strcmp(key, "table")) {
             if (!ofputil_table_from_string(value, pp->table_map,
                                            &oc->recirc_table)) {
@@ -6742,6 +6750,11 @@ parse_CT(char *arg, const struct ofpact_parse_params *pp)
         error = xasprintf("\"force\" flag requires \"commit\" flag.");
     }
 
+    if (!error && (oc->flags & NX_CT_F_LOOKUP_INV) &&
+            (oc->flags & NX_CT_F_COMMIT)) {
+        error = xasprintf("\"lookup_invalid\" flag not allowed with "
+                          "\"commit\" flag.");
+    }
     if (ofpbuf_oversized(pp->ofpacts)) {
         free(error);
         return xasprintf("input too big");
@@ -6784,6 +6797,9 @@ format_CT(const struct ofpact_conntrack *a,
     }
     if (a->flags & NX_CT_F_FORCE) {
         ds_put_format(fp->s, "%sforce%s,", colors.value, colors.end);
+    }
+    if (a->flags & NX_CT_F_LOOKUP_INV) {
+        ds_put_format(fp->s, "%slookup_invalid%s,", colors.value, colors.end);
     }
     if (a->recirc_table != NX_CT_RECIRC_NONE) {
         ds_put_format(fp->s, "%stable=%s", colors.special, colors.end);
