@@ -2372,3 +2372,41 @@ OVSDB_CHECK_CLUSTER_IDL([simple idl, initially empty, force reconnect],
 [],
 [],
 reconnect.*waiting .* seconds before reconnect)
+
+AT_SETUP([idl table and column presence check])
+AT_KEYWORDS([ovsdb server idl table column check])
+AT_CHECK([ovsdb_start_idltest "" "$abs_srcdir/idltest2.ovsschema"])
+
+ovsdb-tool create db2 $abs_srcdir/idltest.ovsschema
+ovsdb-server -vconsole:warn --log-file=ovsdb-server2.log --detach --no-chdir --pidfile=ovsdb-server2.pid --remote=punix:socket2 db2
+on_exit 'kill `cat ovsdb-server2.pid`'
+
+# In this test, test-ovsdb first connects to the server with schema
+# idltest2.ovsschema and outputs the presence of tables and columns.
+# And then it connectes to the server with the schema idltest.ovsschema
+# and does the same.
+AT_CHECK([test-ovsdb -vconsole:off -t10 idl-table-column-check unix:socket unix:socket2 \
+simple link1 link2 simple5 foo simple5:irefmap simple5:foo link1:l2],
+[0], [dnl
+table simple is present
+table link1 is present
+table link2 is not present
+table simple5 is not present
+table foo is not present
+table simple5 is not present
+table simple5 is not present
+column l2 in table link1 is not present
+--- remote 1 done ---
+table simple is present
+table link1 is present
+table link2 is present
+table simple5 is present
+table foo is not present
+column irefmap in table simple5 is present
+column foo in table simple5 is not present
+column l2 in table link1 is present
+--- remote 2 done ---
+])
+
+OVSDB_SERVER_SHUTDOWN
+AT_CLEANUP
