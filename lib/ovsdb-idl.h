@@ -94,6 +94,10 @@ void ovsdb_idl_check_consistency(const struct ovsdb_idl *);
 const struct ovsdb_idl_class *ovsdb_idl_get_class(const struct ovsdb_idl *);
 const struct ovsdb_idl_table_class *ovsdb_idl_table_class_from_column(
     const struct ovsdb_idl_class *, const struct ovsdb_idl_column *);
+bool ovsdb_idl_server_has_table(struct ovsdb_idl *,
+                                const struct ovsdb_idl_table_class *);
+bool ovsdb_idl_server_has_column(struct ovsdb_idl *,
+                                 const struct ovsdb_idl_column *);
 
 /* Choosing columns and tables to replicate.
  *
@@ -473,7 +477,6 @@ void ovsdb_idl_cursor_next(struct ovsdb_idl_cursor *);
 void ovsdb_idl_cursor_next_eq(struct ovsdb_idl_cursor *);
 
 struct ovsdb_idl_row *ovsdb_idl_cursor_data(struct ovsdb_idl_cursor *);
-
 #ifdef __cplusplus
 }
 #endif
