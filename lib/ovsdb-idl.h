@@ -474,6 +474,10 @@ void ovsdb_idl_cursor_next_eq(struct ovsdb_idl_cursor *);
 
 struct ovsdb_idl_row *ovsdb_idl_cursor_data(struct ovsdb_idl_cursor *);
 
+bool ovsdb_idl_has_table(struct ovsdb_idl *idl, const char *table_name);
+bool ovsdb_idl_has_column_in_table(struct ovsdb_idl *idl,
+                                   const char *table_name,
+                                   const char *column_name);
 #ifdef __cplusplus
 }
 #endif

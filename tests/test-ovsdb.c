@@ -3268,6 +3268,77 @@ do_idl_compound_index(struct ovs_cmdl_context *ctx)
     printf("%03d: done\n", step);
 }
 
+static void
+do_idl_table_column_check(struct ovs_cmdl_context *ctx)
+{
+    struct jsonrpc *rpc;
+    struct ovsdb_idl *idl;
+    unsigned int seqno = 0;
+    int error;
+    int i;
+
+    if (ctx->argc < 3) {
+        exit(1);
+    }
+
+    idl = ovsdb_idl_create(ctx->argv[1], &idltest_idl_class, true, true);
+    ovsdb_idl_set_leader_only(idl, false);
+    struct stream *stream;
+
+    error = stream_open_block(jsonrpc_stream_open(ctx->argv[1], &stream,
+                              DSCP_DEFAULT), -1, &stream);
+    if (error) {
+        ovs_fatal(error, "failed to connect to \"%s\"", ctx->argv[1]);
+    }
+    rpc = jsonrpc_open(stream);
+
+    for (int r = 1; r <= 2; r++) {
+        ovsdb_idl_set_remote(idl, ctx->argv[r], true);
+        ovsdb_idl_force_reconnect(idl);
+
+        /* Wait for update. */
+        for (;;) {
+            ovsdb_idl_run(idl);
+            ovsdb_idl_check_consistency(idl);
+            if (ovsdb_idl_get_seqno(idl) != seqno) {
+                break;
+            }
+            jsonrpc_run(rpc);
+
+            ovsdb_idl_wait(idl);
+            jsonrpc_wait(rpc);
+            poll_block();
+        }
+
+        seqno = ovsdb_idl_get_seqno(idl);
+
+        for (i = 3; i < ctx->argc; i++) {
+            char *save_ptr2 = NULL;
+            char *arg  = xstrdup(ctx->argv[i]);
+            char *table_name = strtok_r(arg, ":", &save_ptr2);
+            char *column_name = strtok_r(NULL, ":", &save_ptr2);
+
+            bool table_present = ovsdb_idl_has_table(idl, table_name);
+            if (!table_present || !column_name) {
+                printf("table %s %s present\n", table_name,
+                    table_present ? "is" : "is not");
+            }
+            if (table_present && column_name) {
+                printf("column %s in table %s %s present\n", column_name,
+                    table_name,
+                    ovsdb_idl_has_column_in_table(idl, table_name,
+                                                    column_name) ?
+                    "is" : "is not");
+            }
+            free(arg);
+        }
+        printf("--- remote %d done ---\n", r);
+    }
+
+    jsonrpc_close(rpc);
+    ovsdb_idl_destroy(idl);
+}
+
 static struct ovs_cmdl_command all_commands[] = {
     { "log-io", NULL, 2, INT_MAX, do_log_io, OVS_RO },
     { "default-atoms", NULL, 0, 0, do_default_atoms, OVS_RO },
@@ -3306,6 +3377,8 @@ static struct ovs_cmdl_command all_commands[] = {
         do_idl_partial_update_map_column, OVS_RO },
     { "idl-partial-update-set-column", NULL, 1, INT_MAX,
         do_idl_partial_update_set_column, OVS_RO },
+    { "idl-table-column-check", NULL, 1, INT_MAX,
+        do_idl_table_column_check, OVS_RO },
     { "help", NULL, 0, INT_MAX, do_help, OVS_RO },
     { NULL, NULL, 0, 0, NULL, OVS_RO },
 };

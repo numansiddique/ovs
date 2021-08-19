@@ -287,6 +287,8 @@ ovsdb_idl_create_unconnected(const struct ovsdb_idl_class *class,
             = table->change_seqno[OVSDB_IDL_CHANGE_MODIFY]
             = table->change_seqno[OVSDB_IDL_CHANGE_DELETE] = 0;
         table->idl = idl;
+        table->in_server_schema = true;  /* Assume it's in server schema. */
+        sset_init(&table->schema_columns);
     }
 
     return idl;
@@ -337,6 +339,7 @@ ovsdb_idl_destroy(struct ovsdb_idl *idl)
             struct ovsdb_idl_table *table = &idl->tables[i];
             ovsdb_idl_destroy_indexes(table);
             shash_destroy(&table->columns);
+            sset_destroy(&table->schema_columns);
             hmap_destroy(&table->rows);
             free(table->modes);
         }
@@ -718,6 +721,7 @@ ovsdb_idl_compose_monitor_request(const struct json *schema_json, void *idl_)
 
         struct json *columns
             = table->need_table ? json_array_create_empty() : NULL;
+        sset_clear(&table->schema_columns);
         for (size_t j = 0; j < tc->n_columns; j++) {
             const struct ovsdb_idl_column *column = &tc->columns[j];
             bool idl_has_column = (table_schema &&
@@ -741,6 +745,7 @@ ovsdb_idl_compose_monitor_request(const struct json *schema_json, void *idl_)
                 }
                 json_array_add(columns, json_string_create(column->name));
             }
+            sset_add(&table->schema_columns, column->name);
         }
 
         if (columns) {
@@ -749,7 +754,12 @@ ovsdb_idl_compose_monitor_request(const struct json *schema_json, void *idl_)
                           "(database needs upgrade?)",
                           idl->class_->database, table->class_->name);
                 json_destroy(columns);
+                /* Set 'table->in_server_schema' to false so that this can be
+                 * excluded from transactions. */
+                table->in_server_schema = false;
                 continue;
+            } else if (schema && table_schema) {
+                table->in_server_schema = true;
             }
 
             monitor_request = json_object_create();
@@ -4255,4 +4265,30 @@ ovsdb_idl_loop_commit_and_wait(struct ovsdb_idl_loop *loop)
     ovsdb_idl_wait(loop->idl);
 
     return retval;
+}
+
+static struct ovsdb_idl_table*
+ovsdb_idl_get_table(struct ovsdb_idl *idl, const char *table_name)
+{
+    struct ovsdb_idl_table *table = shash_find_data(&idl->table_by_name,
+                                                    table_name);
+    return table && table->in_server_schema ? table : NULL;
+}
+
+bool
+ovsdb_idl_has_table(struct ovsdb_idl *idl, const char *table_name)
+{
+    return ovsdb_idl_get_table(idl, table_name) ? true: false;
+}
+
+bool
+ovsdb_idl_has_column_in_table(struct ovsdb_idl *idl, const char *table_name,
+                              const char *column_name)
+{
+    struct ovsdb_idl_table *table = ovsdb_idl_get_table(idl, table_name);
+    if (table && sset_find(&table->schema_columns, column_name)) {
+        return true;
+    }
+
+    return false;
 }
