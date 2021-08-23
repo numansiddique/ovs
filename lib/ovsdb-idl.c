@@ -104,6 +104,7 @@ struct ovsdb_idl_txn {
     struct json *request_id;
     struct ovsdb_idl *idl;
     struct hmap txn_rows;
+    struct hmap excluded_rows; /* Rows excluded from the txn. */
     enum ovsdb_idl_txn_status status;
     char *error;
     bool dry_run;
@@ -2522,6 +2523,7 @@ ovsdb_idl_txn_create(struct ovsdb_idl *idl)
     txn->request_id = NULL;
     txn->idl = idl;
     hmap_init(&txn->txn_rows);
+    hmap_init(&txn->excluded_rows);
     txn->status = TXN_UNCOMMITTED;
     txn->error = NULL;
     txn->dry_run = false;
@@ -2751,6 +2753,13 @@ ovsdb_idl_txn_disassemble(struct ovsdb_idl_txn *txn)
     }
     hmap_destroy(&txn->txn_rows);
     hmap_init(&txn->txn_rows);
+
+    HMAP_FOR_EACH_POP (row, txn_node, &txn->excluded_rows) {
+        ovsdb_idl_row_clear_new(row);
+        free(row);
+    }
+    hmap_destroy(&txn->excluded_rows);
+    hmap_init(&txn->excluded_rows);
 }
 
 static bool
@@ -3384,6 +3393,17 @@ ovsdb_idl_txn_write__(const struct ovsdb_idl_row *row_,
     }
 
     class = row->table->class_;
+
+    if (!ovsdb_idl_server_has_column(row->table->idl, column)) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
+        VLOG_WARN_RL(&rl, "%s table in %s database lacks %s column, "
+                     "excluding from the txn.",
+                     row->table->class_->name,
+                     row->table->idl->class_->database,
+                     column->name);
+        goto discard_datum;
+    }
+
     column_idx = column - class->columns;
     write_only = row->table->modes[column_idx] == OVSDB_IDL_MONITOR;
 
@@ -3533,6 +3553,11 @@ ovsdb_idl_txn_verify(const struct ovsdb_idl_row *row_,
         return;
     }
 
+    if (!row->table->in_server_schema ||
+        !ovsdb_idl_server_has_column(row->table->idl, column)) {
+        return;
+    }
+
     class = row->table->class_;
     column_idx = column - class->columns;
 
@@ -3618,6 +3643,18 @@ ovsdb_idl_txn_insert(struct ovsdb_idl_txn *txn,
 
     row->table = ovsdb_idl_table_from_class(txn->idl, class);
     row->new_datum = xmalloc(class->n_columns * sizeof *row->new_datum);
+    if (!row->table->in_server_schema) {
+        /* The table is not present in the server schema.  Do not
+         * include it in the transaction.  Instead, add it in the
+         * 'excluded_rows' of the 'txn' so that it can be freed
+         * at the end the transaction. */
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
+        VLOG_WARN_RL(&rl, "%s database lacks %s table, excluding from "
+                     "the txn.", row->table->idl->class_->database,
+                     row->table->class_->name);
+        return row;
+    }
+
     hmap_insert(&row->table->rows, &row->hmap_node, uuid_hash(&row->uuid));
     hmap_insert(&txn->txn_rows, &row->txn_node, uuid_hash(&row->uuid));
     ovsdb_idl_add_to_indexes(row);
