@@ -999,6 +999,7 @@ test-ovsdb|ovsdb_idl|idltest database lacks simple5 table (database needs upgrad
 test-ovsdb|ovsdb_idl|idltest database lacks simple6 table (database needs upgrade?)
 test-ovsdb|ovsdb_idl|idltest database lacks singleton table (database needs upgrade?)
 test-ovsdb|ovsdb_idl|link1 table in idltest database lacks l2 column (database needs upgrade?)
+test-ovsdb|ovsdb_idl|simple7 table in idltest database lacks id column (database needs upgrade?)
 ])
 
 # Check that ovsdb-idl sent on "monitor" request and that it didn't
@@ -2406,6 +2407,42 @@ column irefmap in table simple5 is present
 column foo in table simple5 is not present
 column l2 in table link1 is present
 --- remote 2 done ---
+])
+
+OVSDB_SERVER_SHUTDOWN
+AT_CLEANUP
+
+AT_SETUP([idl transaction handling of missing tables and columns - C])
+AT_KEYWORDS([ovsdb client idl txn])
+
+# idltest2.ovsschema is the same as idltest.ovsschema, except that
+# few tables and columns are missing. This test checks that idl doesn't
+# include the missing tables and columns in the transactions.
+# idl-missing-table-column-txn inserts
+#   - a row for table - 'simple'
+#   - a row for table - 'simple5' which is missing.  This should not be
+#                        included in the transaction.
+#   - a row for table - 'simple7 with the missing column 'id'.
+
+AT_CHECK([ovsdb_start_idltest "" "$abs_srcdir/idltest2.ovsschema"])
+AT_CHECK([test-ovsdb '-vPATTERN:console:test-ovsdb|%c|%m' -vjsonrpc -t10 idl-missing-table-column-txn unix:socket],
+         [0], [stdout], [stderr])
+AT_CHECK([sort stdout | uuidfilt], [0],
+    [[000: After inserting simple, simple5 and simple7
+001: table simple7: name=simple7 id= uuid=<0>
+001: table simple: i=0 r=0 b=false s=simple u=<1> ia=[] ra=[] ba=[] sa=[] ua=[] uuid=<2>
+002: End test
+]])
+
+AT_CHECK([grep ovsdb_idl stderr | sort], [0], [dnl
+test-ovsdb|ovsdb_idl|idltest database lacks indexed table (database needs upgrade?)
+test-ovsdb|ovsdb_idl|idltest database lacks link2 table (database needs upgrade?)
+test-ovsdb|ovsdb_idl|idltest database lacks simple5 table (database needs upgrade?)
+test-ovsdb|ovsdb_idl|idltest database lacks simple5 table, excluding from the txn.
+test-ovsdb|ovsdb_idl|idltest database lacks simple6 table (database needs upgrade?)
+test-ovsdb|ovsdb_idl|idltest database lacks singleton table (database needs upgrade?)
+test-ovsdb|ovsdb_idl|link1 table in idltest database lacks l2 column (database needs upgrade?)
+test-ovsdb|ovsdb_idl|simple7 table in idltest database lacks id column (database needs upgrade?)
 ])
 
 OVSDB_SERVER_SHUTDOWN

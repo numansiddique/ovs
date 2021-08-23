@@ -2141,6 +2141,17 @@ print_idl_row_simple6(const struct idltest_simple6 *s6, int step)
 }
 
 static void
+print_idl_row_simple7(const struct idltest_simple7 *s7, int step)
+{
+    struct ds msg = DS_EMPTY_INITIALIZER;
+    ds_put_format(&msg, "name=%s id=%s", s7->name, s7->id);
+    char *row_msg = format_idl_row(&s7->header_, step, ds_cstr(&msg));
+    print_and_log("%s", row_msg);
+    ds_destroy(&msg);
+    free(row_msg);
+}
+
+static void
 print_idl_row_singleton(const struct idltest_singleton *sng, int step)
 {
     struct ds msg = DS_EMPTY_INITIALIZER;
@@ -2164,6 +2175,7 @@ print_idl(struct ovsdb_idl *idl, int step)
     const struct idltest_link1 *l1;
     const struct idltest_link2 *l2;
     const struct idltest_singleton *sng;
+    const struct idltest_simple7 *s7;
     int n = 0;
 
     IDLTEST_SIMPLE_FOR_EACH (s, idl) {
@@ -2192,6 +2204,10 @@ print_idl(struct ovsdb_idl *idl, int step)
     }
     IDLTEST_SINGLETON_FOR_EACH (sng, idl) {
         print_idl_row_singleton(sng, step);
+        n++;
+    }
+    IDLTEST_SIMPLE7_FOR_EACH (s7, idl) {
+        print_idl_row_simple7(s7, step);
         n++;
     }
     if (!n) {
@@ -3339,6 +3355,41 @@ do_idl_table_column_check(struct ovs_cmdl_context *ctx)
     ovsdb_idl_destroy(idl);
 }
 
+static void
+do_idl_missing_table_column_txn(struct ovs_cmdl_context *ctx)
+{
+    struct ovsdb_idl *idl;
+    struct ovsdb_idl_txn *myTxn;
+    int step = 0;
+
+    idl = ovsdb_idl_create(ctx->argv[1], &idltest_idl_class, true, true);
+
+    ovsdb_idl_get_initial_snapshot(idl);
+
+    ovsdb_idl_run(idl);
+
+    /* Insert a row in simple2. */
+    myTxn = ovsdb_idl_txn_create(idl);
+    struct idltest_simple *simple_row = idltest_simple_insert(myTxn);
+    idltest_simple_set_s(simple_row, "simple");
+
+    /* Insert a row in simple5. simple5 table doesn't exist. */
+    struct idltest_simple5 *simple5_row = idltest_simple5_insert(myTxn);
+    idltest_simple5_set_name(simple5_row, "simple");
+
+    struct idltest_simple7 *simple7_row = idltest_simple7_insert(myTxn);
+    idltest_simple7_set_name(simple7_row, "simple7");
+    idltest_simple7_set_id(simple7_row, "simple7_id");
+
+    ovsdb_idl_txn_commit_block(myTxn);
+    ovsdb_idl_txn_destroy(myTxn);
+    ovsdb_idl_get_initial_snapshot(idl);
+    printf("%03d: After inserting simple, simple5 and simple7\n", step++);
+    print_idl(idl, step++);
+    ovsdb_idl_destroy(idl);
+    printf("%03d: End test\n", step);
+}
+
 static struct ovs_cmdl_command all_commands[] = {
     { "log-io", NULL, 2, INT_MAX, do_log_io, OVS_RO },
     { "default-atoms", NULL, 0, 0, do_default_atoms, OVS_RO },
@@ -3379,6 +3430,8 @@ static struct ovs_cmdl_command all_commands[] = {
         do_idl_partial_update_set_column, OVS_RO },
     { "idl-table-column-check", NULL, 1, INT_MAX,
         do_idl_table_column_check, OVS_RO },
+    { "idl-missing-table-column-txn", NULL, 1, INT_MAX,
+        do_idl_missing_table_column_txn, OVS_RO },
     { "help", NULL, 0, INT_MAX, do_help, OVS_RO },
     { NULL, NULL, 0, 0, NULL, OVS_RO },
 };
