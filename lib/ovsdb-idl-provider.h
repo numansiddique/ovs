@@ -74,6 +74,7 @@ struct ovsdb_idl_row {
     struct ovs_list dst_arcs;   /* Backward arcs (ovsdb_idl_arc.dst_node). */
     struct ovsdb_idl_table *table; /* Containing table. */
     struct ovsdb_datum *old_datum; /* Committed data (null if orphaned). */
+    bool persist_uuid;          /* Use OVSDB UUID extn to persist 'uuid'. */
     bool parsed; /* Whether the row is parsed. */
 
     /* Transactional data. */
