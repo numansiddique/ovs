@@ -2466,3 +2466,30 @@ unix:socket2 remote has col id in table simple7
 
 OVSDB_SERVER_SHUTDOWN
 AT_CLEANUP
+
+AT_SETUP([idl creating rows with persistent uuid - C])
+AT_KEYWORDS([ovsdb client idl txn])
+
+AT_CHECK([ovsdb_start_idltest "" "$abs_srcdir/idltest.ovsschema"])
+AT_CHECK([test-ovsdb '-vPATTERN:console:test-ovsdb|%c|%m' -vjsonrpc -t10 idl-txn-persistent-uuid unix:socket],
+         [0], [stdout], [stderr])
+AT_CHECK([sort stdout], [0],
+    [[000: After inserting simple, simple3 and simple4
+001: table simple3: name=simple3 uset=[] uref=[c5cc12f8-eaa1-43a7-8a73-bccd18df1111] uuid=c5cc12f8-eaa1-43a7-8a73-bccd18df2222
+001: table simple4: name=simple4 uuid=c5cc12f8-eaa1-43a7-8a73-bccd18df1111
+001: table simple: i=0 r=0 b=false s=simple u=00000000-0000-0000-0000-000000000000 ia=[] ra=[] ba=[] sa=[] ua=[] uuid=c5cc12f8-eaa1-43a7-8a73-bccd18df3333
+002: After inserting simple with same uuid
+003: table simple3: name=simple3 uset=[] uref=[c5cc12f8-eaa1-43a7-8a73-bccd18df1111] uuid=c5cc12f8-eaa1-43a7-8a73-bccd18df2222
+003: table simple4: name=simple4 uuid=c5cc12f8-eaa1-43a7-8a73-bccd18df1111
+003: table simple: i=0 r=0 b=false s=simple u=00000000-0000-0000-0000-000000000000 ia=[] ra=[] ba=[] sa=[] ua=[] uuid=c5cc12f8-eaa1-43a7-8a73-bccd18df3333
+004: End test
+]])
+
+AT_CHECK([grep ovsdb_idl stderr | sort], [0], [dnl
+test-ovsdb|ovsdb_idl|transaction error: {"details":"This UUID would dnl
+duplicate a UUID already present within the table or deleted within dnl
+the same transaction.","error":"duplicate uuid","syntax":"\"c5cc12f8-eaa1-43a7-8a73-bccd18df3333\""}
+])
+
+OVSDB_SERVER_SHUTDOWN
+AT_CLEANUP

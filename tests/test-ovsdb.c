@@ -3389,6 +3389,63 @@ do_idl_table_column_check(struct ovs_cmdl_context *ctx)
     ovsdb_idl_destroy(idl);
 }
 
+static void
+do_idl_txn_persistent_uuid(struct ovs_cmdl_context *ctx)
+{
+    struct ovsdb_idl *idl;
+    struct ovsdb_idl_txn *myTxn;
+    int step = 0;
+
+    idl = ovsdb_idl_create(ctx->argv[1], &idltest_idl_class, true, true);
+    ovsdb_idl_get_initial_snapshot(idl);
+    ovsdb_idl_run(idl);
+
+    myTxn = ovsdb_idl_txn_create(idl);
+
+    struct uuid uuid1;
+    uuid_from_string(&uuid1, "c5cc12f8-eaa1-43a7-8a73-bccd18df1111");
+
+    struct uuid uuid2;
+    uuid_from_string(&uuid2, "c5cc12f8-eaa1-43a7-8a73-bccd18df2222");
+
+    struct idltest_simple4 *simple4_row =
+        idltest_simple4_insert_persist_uuid(myTxn, &uuid1);
+    idltest_simple4_set_name(simple4_row, "simple4");
+
+    struct idltest_simple3 *simple3_row =
+        idltest_simple3_insert_persist_uuid(myTxn, &uuid2);
+    idltest_simple3_set_name(simple3_row, "simple3");
+    idltest_simple3_set_uref(simple3_row, &simple4_row, 1);
+
+    struct uuid uuid3;
+    uuid_from_string(&uuid3, "c5cc12f8-eaa1-43a7-8a73-bccd18df3333");
+
+    struct idltest_simple *simple_row =
+        idltest_simple_insert_persist_uuid(myTxn, &uuid3);
+    idltest_simple_set_s(simple_row, "simple");
+
+    ovsdb_idl_txn_commit_block(myTxn);
+    ovsdb_idl_txn_destroy(myTxn);
+    ovsdb_idl_get_initial_snapshot(idl);
+    printf("%03d: After inserting simple, simple3 and simple4\n", step++);
+    print_idl(idl, step++, false);
+
+    /* Create another txn, insert the row in simple table with the existing
+     * uuid. */
+    myTxn = ovsdb_idl_txn_create(idl);
+    simple_row =
+        idltest_simple_insert_persist_uuid(myTxn, &uuid3);
+    idltest_simple_set_s(simple_row, "simple_foo");
+    ovsdb_idl_txn_commit_block(myTxn);
+    ovsdb_idl_txn_destroy(myTxn);
+    ovsdb_idl_get_initial_snapshot(idl);
+    printf("%03d: After inserting simple with same uuid\n", step++);
+    print_idl(idl, step++, false);
+
+    ovsdb_idl_destroy(idl);
+    printf("%03d: End test\n", step++);
+}
+
 static struct ovs_cmdl_command all_commands[] = {
     { "log-io", NULL, 2, INT_MAX, do_log_io, OVS_RO },
     { "default-atoms", NULL, 0, 0, do_default_atoms, OVS_RO },
@@ -3429,6 +3486,8 @@ static struct ovs_cmdl_command all_commands[] = {
         do_idl_partial_update_set_column, OVS_RO },
     { "idl-table-column-check", NULL, 2, 2,
         do_idl_table_column_check, OVS_RO },
+    { "idl-txn-persistent-uuid", NULL, 1, INT_MAX,
+        do_idl_txn_persistent_uuid, OVS_RO },
     { "help", NULL, 0, INT_MAX, do_help, OVS_RO },
     { NULL, NULL, 0, 0, NULL, OVS_RO },
 };

@@ -323,6 +323,10 @@
         invocation in contexts where a UUID is expected.  Such references may
         precede or follow the <code>create</code> command.
       </p>
+      <p>
+        If a valid <var>uuid</var> is specified, then it is used as the
+        UUID of the new row.
+      </p>
       <dl>
         <dt>Caution (ovs-vsctl as example)</dt>
         <dd>
