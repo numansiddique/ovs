@@ -212,6 +212,8 @@ static inline bool recirc_id_node_try_ref_rcu(const struct recirc_id_node *n_)
 
 void recirc_id_node_unref(const struct recirc_id_node *);
 
+void recirc_set_max_recirc_id(uint32_t max_recirc_id_);
+
 void recirc_run(void);
 
 /* Recirculation IDs on which references are held. */

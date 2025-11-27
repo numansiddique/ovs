@@ -908,3 +908,22 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
         }
     }
 }
+
+uint32_t
+netdev_get_max_recird_id(void)
+{
+    uint32_t max_recirc_id = 0;
+
+    struct netdev_registered_flow_api *rfa;
+
+    CMAP_FOR_EACH (rfa, cmap_node, &netdev_flow_apis) {
+        if (rfa->flow_api->get_max_recirc_id) {
+            uint32_t rfa_max_recirc_id = rfa->flow_api->get_max_recirc_id();
+            if (rfa_max_recirc_id > max_recirc_id) {
+                max_recirc_id = rfa_max_recirc_id;
+            }
+        }
+    }
+
+    return max_recirc_id;
+}

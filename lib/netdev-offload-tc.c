@@ -3430,6 +3430,11 @@ meter_tc_del_policer(ofproto_meter_id meter_id,
     return err;
 }
 
+static uint32_t
+netdev_tc_get_max_recird_id(void) {
+    return TC_ACT_EXT_VAL_MASK;
+}
+
 const struct netdev_flow_api netdev_offload_tc = {
    .type = "linux_tc",
    .flow_flush = netdev_tc_flow_flush,
@@ -3443,5 +3448,6 @@ const struct netdev_flow_api netdev_offload_tc = {
    .meter_set = meter_tc_set_policer,
    .meter_get = meter_tc_get_policer,
    .meter_del = meter_tc_del_policer,
+   .get_max_recirc_id = netdev_tc_get_max_recird_id,
    .init_flow_api = netdev_tc_init_flow_api,
 };

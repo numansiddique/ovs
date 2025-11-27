@@ -36,6 +36,8 @@ static struct ovs_list expired OVS_GUARDED_BY(mutex)
 
 static uint32_t next_id OVS_GUARDED_BY(mutex) = 1; /* Possible next free id. */
 
+static uint32_t max_recirc_id;
+
 #define RECIRC_POOL_STATIC_IDS 1024
 
 static void recirc_id_node_free(struct recirc_id_node *);
@@ -81,6 +83,14 @@ recirc_run(void)
         }
     }
     ovs_mutex_unlock(&mutex);
+}
+
+void
+recirc_set_max_recirc_id(uint32_t max_recirc_id_)
+{
+    if (max_recirc_id_ > max_recirc_id) {
+        max_recirc_id = max_recirc_id_;
+    }
 }
 
 /* We use the id as the hash value, which works due to cmap internal rehashing.
@@ -228,7 +238,8 @@ frozen_state_free(struct frozen_state *state)
 
 /* Allocate a unique recirculation id for the given set of flow metadata.
  * The ID space is 2^^32, so there should never be a situation in which all
- * the IDs are used up.  We loop until we find a free one. */
+ * the IDs are used up.  Although, the ID space could be limited to less
+ * than 2^^32, if max_recirc_id is set.  We loop until we find a free one. */
 static struct recirc_id_node *
 recirc_alloc_id__(const struct frozen_state *state, uint32_t hash)
 {
@@ -247,7 +258,8 @@ recirc_alloc_id__(const struct frozen_state *state, uint32_t hash)
            RECIRC_POOL_STATIC_IDS IDs on the later rounds, though, as some of
            the initial allocations may be for long term uses (like bonds). */
         node->id = next_id++;
-        if (OVS_UNLIKELY(!node->id)) {
+        if (OVS_UNLIKELY(!node->id ||
+                         (max_recirc_id && node->id >= max_recirc_id))) {
             next_id = RECIRC_POOL_STATIC_IDS + 1;
             node->id = next_id++;
         }

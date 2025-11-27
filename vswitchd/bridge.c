@@ -43,6 +43,7 @@
 #include "odp-execute.h"
 #include "ofproto/bond.h"
 #include "ofproto/ofproto.h"
+#include "ofproto/ofproto-dpif-rid.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/list.h"
 #include "openvswitch/meta-flow.h"
@@ -328,7 +329,7 @@ static void run_system_stats(void);
 static void bridge_configure_mirrors(struct bridge *);
 static struct mirror *mirror_create(struct bridge *,
                                     const struct ovsrec_mirror *);
-static void mirror_destroy(struct mirror *);
+static void mirror_delete(struct mirror *);
 static bool mirror_configure(struct mirror *);
 static void mirror_refresh_stats(struct mirror *);
 
@@ -3398,6 +3399,7 @@ bridge_run(void)
         netdev_set_flow_api_enabled(&cfg->other_config);
         dpdk_init(&cfg->other_config);
         userspace_tso_init(&cfg->other_config);
+        recirc_set_max_recirc_id(netdev_get_max_recird_id());
     }
 
     /* Initialize the ofproto library.  This only needs to run once, but
@@ -3708,7 +3710,7 @@ bridge_destroy(struct bridge *br, bool del)
             port_destroy(port);
         }
         HMAP_FOR_EACH_SAFE (mirror, hmap_node, &br->mirrors) {
-            mirror_destroy(mirror);
+            mirror_delete(mirror);
         }
 
         hmap_remove(&all_bridges, &br->node);
@@ -5153,7 +5155,7 @@ bridge_configure_mirrors(struct bridge *br)
 
         atom.uuid = m->uuid;
         if (!ovsdb_datum_find_key(mc, &atom, OVSDB_TYPE_UUID, NULL)) {
-            mirror_destroy(m);
+            mirror_delete(m);
         }
     }
 
@@ -5166,7 +5168,7 @@ bridge_configure_mirrors(struct bridge *br)
         }
         m->cfg = cfg;
         if (!mirror_configure(m)) {
-            mirror_destroy(m);
+            mirror_delete(m);
         }
     }
 
@@ -5192,7 +5194,7 @@ mirror_create(struct bridge *br, const struct ovsrec_mirror *cfg)
 }
 
 static void
-mirror_destroy(struct mirror *m)
+mirror_delete(struct mirror *m)
 {
     if (m) {
         struct bridge *br = m->bridge;

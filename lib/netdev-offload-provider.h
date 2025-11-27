@@ -121,6 +121,10 @@ struct netdev_flow_api {
     int (*meter_del)(ofproto_meter_id meter_id,
                      struct ofputil_meter_stats *stats);
 
+    /* Returns the maximum value of the flow recirc_id which the provider can
+     * support, if it uses the flow recirc_id to offload. */
+    uint32_t (*get_max_recirc_id)(void);
+
     /* Initializies the netdev flow api.
      * Return 0 if successful, otherwise returns a positive errno value. */
     int (*init_flow_api)(struct netdev *);
