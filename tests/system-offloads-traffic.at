@@ -1198,6 +1198,74 @@ OVS_WAIT_WHILE(
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([offloads - split recirc rules kernel vs offload])
+OVS_TRAFFIC_VSWITCHD_START([], [], [-- set Open_vSwitch . other_config:hw-offload=true])
+
+ADD_NAMESPACES(at_ns0, at_ns1)
+
+ADD_VETH(p1, at_ns0, br0, "10.0.0.1/24")
+ADD_VETH(p2, at_ns1, br0, "10.0.0.2/24")
+
+dnl Two source IPs on the same veth guarantee the same in_port and therefore
+dnl the same recirc ID R1 for the second datapath flow.
+NS_CHECK_EXEC([at_ns0], [ip addr add 10.0.0.3/24 dev p1])
+
+AT_CHECK([ovs-vsctl -- set interface ovs-p1 ofport_request=1 \
+                    -- set interface ovs-p2 ofport_request=2])
+
+AT_CHECK([ovs-appctl vlog/set dpif_offload_tc_netdev:dbg])
+
+dnl controller() is not TC-offloadable, so both datapath flows land in dp:ovs.
+AT_DATA([flows.txt], [dnl
+table=0,arp,actions=NORMAL
+table=0,priority=100,in_port=ovs-p1,ip,nw_dst=10.0.0.2,actions=controller(),ct(commit,table=1)
+table=0,priority=100,in_port=ovs-p2,ip,actions=ovs-p1
+table=1,ip,actions=ovs-p2
+])
+AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
+
+NS_CHECK_EXEC([at_ns0], [ping -q -c 3 -i 0.3 -W 2 10.0.0.2 | FORMAT_PING], [0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+AT_CHECK([ovs-appctl revalidator/wait])
+
+AT_CHECK([grep -q "match for chain .* failed due to non-existing goto chain action" \
+          ovs-vswitchd.log])
+AT_CHECK([ovs-appctl dpctl/dump-flows --names type=ovs \
+          filter='in_port(ovs-p1),ipv4' | grep -c "in_port(ovs-p1)"], [0], [2
+])
+AT_CHECK([ovs-appctl dpctl/dump-flows --names type=tc \
+          filter='in_port(ovs-p1),ipv4'], [0], [dnl
+])
+
+dnl Replace the rule with plain ct (TC-offloadable).  Traffic from 10.0.0.3
+dnl offloads its first datapath flow to dp:tc, which registers the recirc ID.
+dnl After the fix, the second datapath flow should also be offloaded to dp:tc.
+AT_CHECK([ovs-ofctl del-flows br0 "table=0,in_port=ovs-p1,ip,nw_dst=10.0.0.2"])
+AT_DATA([flows2.txt], [dnl
+table=0,priority=100,in_port=ovs-p1,ip,nw_dst=10.0.0.2,actions=ct(commit,table=1)
+])
+AT_CHECK([ovs-ofctl add-flows br0 flows2.txt])
+
+NS_CHECK_EXEC([at_ns0], [ping -q -c 3 -i 0.3 -W 2 -I 10.0.0.3 10.0.0.2 | FORMAT_PING], [0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+AT_CHECK([ovs-appctl revalidator/wait])
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-flows --names type=tc \
+    filter='in_port(ovs-p1),ipv4' | grep -q "actions:ovs-p2"])
+
+AT_CHECK([ovs-appctl dpctl/dump-flows --names type=tc \
+          filter='in_port(ovs-p1),ipv4' | grep -c "in_port(ovs-p1)"], [0], [2
+])
+AT_CHECK([ovs-appctl dpctl/dump-flows --names type=ovs \
+          filter='in_port(ovs-p1),ipv4' | grep "actions:ovs-p2"], [1])
+AT_CHECK([ovs-appctl dpctl/dump-flows --names type=tc \
+          filter='in_port(ovs-p1),ipv4' | grep "actions:ovs-p2"], [0], [ignore])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([offloads - ovs-appctl dpif/offload/show - offloads enabled])
 AT_KEYWORDS([dpif-offload])
 OVS_TRAFFIC_VSWITCHD_START([], [],

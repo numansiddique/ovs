@@ -579,7 +579,8 @@ tc_parse_flow_put(struct tc_offload *offload_tc, struct dpif *dpif,
             }
             netdev_set_hw_info(oor_netdev, HW_INFO_TYPE_OOR, true);
         }
-        level = (err == ENOSPC || err == EOPNOTSUPP) ? VLL_DBG : VLL_ERR;
+        level = (err == ENOSPC || err == EOPNOTSUPP
+                 || err == EAGAIN) ? VLL_DBG : VLL_ERR;
         VLOG_RL(&rl, level, "failed to offload flow: %s: %s",
                 ovs_strerror(err),
                 (oor_netdev ? netdev_get_name(oor_netdev) :
@@ -705,7 +706,12 @@ tc_operate(struct dpif *dpif, const struct dpif_offload *offload_,
             break;
         } /* End of 'switch (op->type)'. */
 
-        if (error != EOPNOTSUPP && error != ENOENT) {
+        if (error == EAGAIN) {
+            /* The recirc ID matched by this flow is not yet registered in
+             * TC (no upstream flow has a goto action for this chain).
+             * Defer the offload so the revalidator retries next cycle. */
+            op->offload_deferred = true;
+        } else if (error != EOPNOTSUPP && error != ENOENT) {
             /* If the operation is unsupported or the entry was not found,
              * we are skipping this flow operation.  Otherwise, it was
              * processed and we should report the result. */

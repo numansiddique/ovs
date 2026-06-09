@@ -2355,17 +2355,6 @@ tc_netdev_flow_put(struct dpif *dpif, struct netdev *netdev,
     chain = key->recirc_id;
     mask->recirc_id = 0;
 
-    if (chain) {
-        /* If we match on a recirculation ID, we must ensure the previous
-         * flow is also in the TC datapath; otherwise, the entry is useless,
-         * as the related packets will be handled by upcalls. */
-        if (!ccmap_find(&used_chains, chain)) {
-            VLOG_DBG_RL(&rl, "match for chain %u failed due to non-existing "
-                        "goto chain action", chain);
-            return EOPNOTSUPP;
-        }
-    }
-
     if (flow_tnl_dst_is_set(&key->tunnel) ||
         flow_tnl_src_is_set(&key->tunnel)) {
         VLOG_DBG_RL(&rl,
@@ -2685,6 +2674,22 @@ tc_netdev_flow_put(struct dpif *dpif, struct netdev *netdev,
     if ((chain || recirc_act) && !info->recirc_id_shared_with_tc) {
         VLOG_DBG_RL(&rl, "flow_put: recirc_id sharing not supported");
         return EOPNOTSUPP;
+    }
+
+    if (chain && !ccmap_find(&used_chains, chain)) {
+        /* If we match on a recirculation ID, we must ensure the previous
+         * flow is also in the TC datapath; otherwise, the entry is useless,
+         * as the related packets will be handled by upcalls.
+         *
+         * Return EAGAIN rather than EOPNOTSUPP: the chain may not be
+         * registered yet because the upstream flow install is still in
+         * progress.  Unlike EOPNOTSUPP, EAGAIN tells the revalidator to
+         * retry the TC offload on a subsequent cycle.  The flow is still
+         * installed in the kernel datapath (dp:ovs) in either case. */
+        VLOG_DBG_RL(&rl, "match for chain %u failed due to non-existing "
+                    "goto chain action",
+                    chain);
+        return EAGAIN;
     }
 
     memset(&adjust_stats, 0, sizeof adjust_stats);

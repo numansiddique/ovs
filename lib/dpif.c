@@ -1354,8 +1354,15 @@ dpif_operate(struct dpif *dpif, struct dpif_op **ops, size_t n_ops,
         for (i = 0; i < n_ops; i++) {
             struct dpif_op *op = ops[i];
             op->error = EINVAL;
+            op->offload_deferred = false;
         }
         return;
+    }
+
+    /* Initialize offload_deferred for all ops; the offload provider sets
+     * it to true if the flow cannot be offloaded yet. */
+    for (size_t i = 0; i < n_ops; i++) {
+        ops[i]->offload_deferred = false;
     }
 
     while (n_ops > 0) {

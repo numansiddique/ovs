@@ -50,6 +50,7 @@
 #define UPCALL_MAX_BATCH 64
 #define REVALIDATE_MAX_BATCH 50
 #define UINT64_THREE_QUARTERS (UINT64_MAX / 4 * 3)
+#define OFFLOAD_DEFERRED_RETRY_MSEC 2000
 
 VLOG_DEFINE_THIS_MODULE(ofproto_dpif_upcall);
 
@@ -347,6 +348,8 @@ struct udpif_key {
 #define OFFL_REBAL_INTVL_MSEC  3000	/* dynamic offload rebalance freq */
     struct netdev *in_netdev;		/* in_odp_port's netdev */
     bool offloaded;			/* True if flow is offloaded */
+    bool offload_deferred;		/* Deferred, retry next cycle. */
+    long long int offload_deferred_expire; /* Retry deadline in msec. */
     uint64_t flow_pps_rate;		/* Packets-Per-Second rate */
     long long int flow_time;		/* last pps update time */
     uint64_t flow_packets;		/* #pkts seen in interval */
@@ -1746,6 +1749,11 @@ handle_upcalls(struct udpif *udpif, struct upcall *upcalls,
                 transition_ukey(ukey, UKEY_EVICTED);
             } else if (ukey->state < UKEY_OPERATIONAL) {
                 transition_ukey(ukey, UKEY_OPERATIONAL);
+                if (ops[i].dop.offload_deferred) {
+                    ukey->offload_deferred_expire =
+                        time_msec() + OFFLOAD_DEFERRED_RETRY_MSEC;
+                    ukey->offload_deferred = true;
+                }
             }
             ovs_mutex_unlock(&ukey->mutex);
         }
@@ -1836,6 +1844,8 @@ ukey_create__(const struct nlattr *key, size_t key_len,
     ukey->xcache = NULL;
 
     ukey->offloaded = false;
+    ukey->offload_deferred = false;
+    ukey->offload_deferred_expire = 0;
     ukey->in_netdev = NULL;
     ukey->flow_packets = ukey->flow_backlog_packets = 0;
 
@@ -2552,6 +2562,18 @@ push_dp_ops(struct udpif *udpif, struct ukey_op *ops, size_t n_ops)
     for (i = 0; i < n_ops; i++) {
         struct ukey_op *op = &ops[i];
 
+        if (op->ukey && op->dop.offload_deferred) {
+            long long int now = time_msec();
+
+            ovs_mutex_lock(&op->ukey->mutex);
+            if (now >= op->ukey->offload_deferred_expire) {
+                op->ukey->offload_deferred_expire =
+                    now + OFFLOAD_DEFERRED_RETRY_MSEC;
+            }
+            op->ukey->offload_deferred = true;
+            ovs_mutex_unlock(&op->ukey->mutex);
+        }
+
         if (op->dop.error) {
             if (op->ukey) {
                 ovs_mutex_lock(&op->ukey->mutex);
@@ -2984,6 +3006,11 @@ revalidate(struct revalidator *revalidator)
                 /* Takes ownership of 'recircs'. */
                 reval_op_init(&ops[n_ops++], result, udpif, ukey, &recircs,
                               &odp_actions);
+            } else if (ukey->offload_deferred) {
+                ukey->offload_deferred = false;
+                if (time_msec() < ukey->offload_deferred_expire) {
+                    put_op_init(&ops[n_ops++], ukey, DPIF_FP_MODIFY);
+                }
             }
             ovs_mutex_unlock(&ukey->mutex);
         }

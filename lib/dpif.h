@@ -782,6 +782,9 @@ int dpif_execute(struct dpif *, struct dpif_execute *);
 struct dpif_op {
     enum dpif_op_type type;
     int error;
+    bool offload_deferred; /* True if the offload provider requires a
+                            * prerequisite flow to be programmed first.
+                            * The revalidator will retry on the next cycle. */
     union {
         struct dpif_flow_put flow_put;
         struct dpif_flow_del flow_del;
