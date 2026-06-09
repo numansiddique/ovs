@@ -24,6 +24,7 @@
 #include "hash.h"
 #include "id-pool.h"
 #include "openvswitch/hmap.h"
+#include "openvswitch/list.h"
 #include "openvswitch/match.h"
 #include "openvswitch/ofpbuf.h"
 #include "openvswitch/thread.h"
@@ -82,6 +83,73 @@ struct policer_node {
 /* ccmap and protective mutex for counting recirculation id (chain) usage. */
 static struct ovs_mutex used_chains_mutex = OVS_MUTEX_INITIALIZER;
 static struct ccmap used_chains;
+
+/* Pending offloads for chains that were not (yet) registered in
+ * 'used_chains' when the offload was attempted.
+ *
+ * When netdev_tc_flow_put() is called for a flow that matches on a
+ * non-zero recirc_id (chain), and no previously-offloaded flow has
+ * registered a matching 'goto chain' action in 'used_chains', the
+ * offload is bailed out with EOPNOTSUPP and the upper layer
+ * (dpif-netlink) installs the flow in the kernel (openvswitch.ko)
+ * software path (dp:ovs) instead.
+ *
+ * Without a retry mechanism, that flow is then permanently stranded
+ * in the software path even after a stage-(N-1) flow eventually
+ * registers 'chain' in 'used_chains' -- because no other event
+ * re-triggers the netdev_tc_flow_put() path for it.
+ *
+ * To address this, when the chain check at netdev_tc_flow_put()
+ * fails, we stash a copy of the flow's installation state in
+ * 'pending_offloads' (keyed by chain).  When
+ * 'ccmap_inc(&used_chains, chain_goto)' is later called from a
+ * successful TC install, retry_pending_offloads_for_chain() walks the
+ * corresponding pending entries and re-attempts the offload.
+ *
+ * On a successful retry, the flow ends up installed in TC.  The
+ * openvswitch.ko (dp:ovs) entry that was installed when the original
+ * netdev_tc_flow_put() failed will eventually be aged out by the
+ * revalidator (which observes that no packets are matching it since
+ * TC is now serving them).
+ *
+ * 'pending_offloads_max' caps the total number of pending entries to
+ * bound the memory footprint; on overflow, the oldest entries are
+ * evicted (they will be re-translated on the next upcall anyway). */
+#define PENDING_OFFLOADS_MAX_DEFAULT 1024
+static struct ovs_mutex pending_offloads_mutex = OVS_MUTEX_INITIALIZER;
+static struct hmap pending_offloads OVS_GUARDED_BY(pending_offloads_mutex);
+static struct ovs_list pending_offloads_lru
+    OVS_GUARDED_BY(pending_offloads_mutex);
+static size_t pending_offloads_count OVS_GUARDED_BY(pending_offloads_mutex);
+static size_t pending_offloads_max = PENDING_OFFLOADS_MAX_DEFAULT;
+
+struct chain_pending_offload {
+    struct hmap_node hmap_node;       /* In 'pending_offloads', key=chain. */
+    struct ovs_list lru_node;         /* In 'pending_offloads_lru'. */
+    uint32_t chain;
+    struct netdev *netdev;             /* Reference held. */
+    ovs_u128 ufid;
+    struct match match;
+    struct nlattr *actions;
+    size_t actions_len;
+    struct offload_info info;
+};
+
+static int netdev_tc_flow_put(struct netdev *netdev, struct match *match,
+                              struct nlattr *actions, size_t actions_len,
+                              const ovs_u128 *ufid,
+                              struct offload_info *info,
+                              struct dpif_flow_stats *stats);
+
+static void retry_pending_offloads_for_chain(uint32_t chain);
+static void record_pending_offload(struct netdev *netdev,
+                                   const struct match *match,
+                                   const struct nlattr *actions,
+                                   size_t actions_len,
+                                   const ovs_u128 *ufid,
+                                   const struct offload_info *info,
+                                   uint32_t chain);
+static void forget_pending_offload_by_ufid(const ovs_u128 *ufid);
 
 /* Protects below meter police ids pool. */
 static struct ovs_mutex meter_police_ids_mutex = OVS_MUTEX_INITIALIZER;
@@ -2299,6 +2367,150 @@ netdev_tc_parse_nl_actions(struct netdev *netdev, struct tc_flower *flower,
     return 0;
 }
 
+/* Pending-offload helpers (see comment near 'pending_offloads' declaration). */
+
+static void
+chain_pending_offload_destroy(struct chain_pending_offload *p)
+{
+    if (p->netdev) {
+        netdev_close(p->netdev);
+    }
+    free(p->actions);
+    free(p);
+}
+
+static void
+forget_pending_offload__(struct chain_pending_offload *p)
+    OVS_REQUIRES(pending_offloads_mutex)
+{
+    hmap_remove(&pending_offloads, &p->hmap_node);
+    ovs_list_remove(&p->lru_node);
+    ovs_assert(pending_offloads_count > 0);
+    pending_offloads_count--;
+}
+
+static void
+forget_pending_offload_by_ufid(const ovs_u128 *ufid)
+{
+    struct chain_pending_offload *p;
+
+    ovs_mutex_lock(&pending_offloads_mutex);
+    HMAP_FOR_EACH_SAFE (p, hmap_node, &pending_offloads) {
+        if (ovs_u128_equals(p->ufid, *ufid)) {
+            forget_pending_offload__(p);
+            chain_pending_offload_destroy(p);
+        }
+    }
+    ovs_mutex_unlock(&pending_offloads_mutex);
+}
+
+static void
+record_pending_offload(struct netdev *netdev, const struct match *match,
+                       const struct nlattr *actions, size_t actions_len,
+                       const ovs_u128 *ufid, const struct offload_info *info,
+                       uint32_t chain)
+{
+    struct chain_pending_offload *p;
+
+    /* Replace any existing pending entry for this ufid (it would have stale
+     * match/actions). */
+    forget_pending_offload_by_ufid(ufid);
+
+    p = xzalloc(sizeof *p);
+    p->chain = chain;
+    p->netdev = netdev_ref(netdev);
+    p->ufid = *ufid;
+    p->match = *match;
+    p->actions = xmemdup(actions, actions_len);
+    p->actions_len = actions_len;
+    p->info = *info;
+
+    ovs_mutex_lock(&pending_offloads_mutex);
+    if (pending_offloads_count >= pending_offloads_max) {
+        struct chain_pending_offload *oldest;
+
+        /* Evict the LRU entry. */
+        oldest = CONTAINER_OF(ovs_list_front(&pending_offloads_lru),
+                              struct chain_pending_offload, lru_node);
+        forget_pending_offload__(oldest);
+        chain_pending_offload_destroy(oldest);
+    }
+    hmap_insert(&pending_offloads, &p->hmap_node, hash_int(chain, 0));
+    ovs_list_push_back(&pending_offloads_lru, &p->lru_node);
+    pending_offloads_count++;
+    ovs_mutex_unlock(&pending_offloads_mutex);
+}
+
+static void
+retry_pending_offloads_for_chain(uint32_t chain)
+{
+    struct ovs_list to_retry = OVS_LIST_INITIALIZER(&to_retry);
+    struct chain_pending_offload *p;
+
+    /* Collect entries for this chain under the mutex, then process them
+     * outside the mutex (the retry itself takes used_chains_mutex and may
+     * trigger further retries for downstream chains).
+     *
+     * Iterate the hash bucket manually with hmap_first/next_with_hash:
+     * the SAFE form of HMAP_FOR_EACH_WITH_HASH isn't provided in OVS so
+     * we save the 'next' pointer before unlinking the current node. */
+    ovs_mutex_lock(&pending_offloads_mutex);
+    {
+        struct hmap_node *node = hmap_first_with_hash(&pending_offloads,
+                                                      hash_int(chain, 0));
+        while (node) {
+            struct hmap_node *next = hmap_next_with_hash(node);
+
+            p = CONTAINER_OF(node, struct chain_pending_offload, hmap_node);
+            if (p->chain == chain) {
+                forget_pending_offload__(p);
+                ovs_list_push_back(&to_retry, &p->lru_node);
+            }
+            node = next;
+        }
+    }
+    ovs_mutex_unlock(&pending_offloads_mutex);
+
+    LIST_FOR_EACH_POP (p, lru_node, &to_retry) {
+        struct match retry_match = p->match;
+        struct offload_info retry_info = p->info;
+        int err;
+
+        /* Re-attempt the offload.  This calls the same function as the
+         * original install; the chain check at the top will now pass
+         * because we just incremented 'used_chains'.  If this install
+         * itself triggers another ccmap_inc() for a downstream chain,
+         * retry_pending_offloads_for_chain will be invoked again --
+         * cascading retries are bounded by the depth of the OVN
+         * pipeline. */
+        err = netdev_tc_flow_put(p->netdev, &retry_match,
+                                 p->actions, p->actions_len, &p->ufid,
+                                 &retry_info, NULL);
+        if (!err) {
+            /* The flow is now in TC.  The dp:ovs fallback that was
+             * installed when the original netdev_tc_flow_put() returned
+             * EOPNOTSUPP will be aged out naturally by the revalidator
+             * once it sees zero packet hits on it (since TC is now
+             * serving the traffic).  We can't issue an explicit delete
+             * from here in v3.6.1 because we don't have access to the
+             * 'struct dpif' that owns the kernel flow table. */
+            VLOG_DBG("retry: re-offloaded stranded flow for chain %u",
+                     chain);
+        } else if (err != EOPNOTSUPP && err != EEXIST) {
+            VLOG_DBG_RL(&error_rl,
+                        "retry: failed to re-offload flow for chain "
+                        "%u: %s", chain, ovs_strerror(err));
+        }
+        /* On err == EOPNOTSUPP (the chain became unavailable again, or
+         * a different bail-out fired), netdev_tc_flow_put() will have
+         * re-recorded the entry as pending.  On other errors, drop the
+         * entry -- the upcall machinery will re-translate it on the
+         * next miss. */
+
+        chain_pending_offload_destroy(p);
+    }
+}
+
 static int
 netdev_tc_flow_put(struct netdev *netdev, struct match *match,
                    struct nlattr *actions, size_t actions_len,
@@ -2333,18 +2545,28 @@ netdev_tc_flow_put(struct netdev *netdev, struct match *match,
 
     exact_match_on_dl_type = mask->dl_type == htons(0xffff);
     chain = key->recirc_id;
-    mask->recirc_id = 0;
 
     if (chain) {
         /* If we match on a recirculation ID, we must ensure the previous
          * flow is also in the TC datapath; otherwise, the entry is useless,
-         * as the related packets will be handled by upcalls. */
+         * as the related packets will be handled by upcalls.
+         *
+         * If the chain check fails here, record the flow's installation
+         * state on the per-chain pending-offloads list so that we can
+         * re-attempt the offload when stage-(N-1) eventually registers a
+         * matching 'goto chain' action.  Note we record BEFORE any mask
+         * mutation below so that the saved match is the same one the
+         * upper layer used to install the dp:ovs fallback. */
         if (!ccmap_find(&used_chains, chain)) {
+            record_pending_offload(netdev, match, actions, actions_len,
+                                   ufid, info, chain);
             VLOG_DBG_RL(&rl, "match for chain %u failed due to non-existing "
                         "goto chain action", chain);
             return EOPNOTSUPP;
         }
     }
+
+    mask->recirc_id = 0;
 
     if (flow_tnl_dst_is_set(&key->tunnel) ||
         flow_tnl_src_is_set(&key->tunnel)) {
@@ -2714,6 +2936,16 @@ netdev_tc_flow_put(struct netdev *netdev, struct match *match,
         }
 
         add_ufid_tc_mapping(netdev, ufid, &id, &adjust_stats, chain_goto);
+
+        /* This flow's 'goto chain' action just made 'chain_goto' usable
+         * for offloaded downstream flows.  Re-attempt any flows whose
+         * earlier offload was bailed out because 'chain_goto' wasn't
+         * registered yet -- without this, such flows would remain
+         * permanently stranded in the kernel software path (dp:ovs)
+         * until external intervention (`dpctl/del-flows`). */
+        if (chain_goto) {
+            retry_pending_offloads_for_chain(chain_goto);
+        }
     }
 
     return err;
@@ -2783,6 +3015,10 @@ netdev_tc_flow_del(struct netdev *netdev OVS_UNUSED,
 {
     struct tcf_id id;
     int error;
+
+    /* Drop any pending-offload entry for this ufid -- the flow is going
+     * away, so we shouldn't try to re-offload it later. */
+    forget_pending_offload_by_ufid(ufid);
 
     error = get_ufid_tc_mapping(ufid, &id);
     if (error) {
@@ -3191,6 +3427,8 @@ netdev_tc_init_flow_api(struct netdev *netdev)
 
     if (ovsthread_once_start(&once)) {
         ccmap_init(&used_chains);
+        hmap_init(&pending_offloads);
+        ovs_list_init(&pending_offloads_lru);
 
         probe_tc_block_support(ifindex);
         /* Need to re-fetch block id as it depends on feature availability. */
